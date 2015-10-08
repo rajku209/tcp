@@ -13,29 +13,18 @@
 #define FLAG_SYN 0b00000010
 #define FLAG_FIN 0b00000001
 
-union offsetflags_hw {
-    uint16_t flat;
-    struct {
-        uint32_t dataoffset  : 4;
-        uint32_t reserved    : 3;
-        uint32_t NS          : 1;
-        uint32_t CWR         : 1;
-        uint32_t ECE         : 1;
-        uint32_t URG         : 1;
-        uint32_t ACK         : 1;
-        uint32_t PSH         : 1;
-        uint32_t RST         : 1;
-        uint32_t SYN         : 1;
-        uint32_t FIN         : 1;
-    } __attribute__((packed)) bits;
-} __attribute__((packed));
+#define LOCALHOST 0x0100007f
+
+#define RETRY_SECS 2
+#define MAX_TRIES 5
 
 struct tcp_header {
     uint16_t srcport;
     uint16_t destport;
     uint32_t seqnum;
     uint32_t acknum;
-    union offsetflags_hw offsetflags;
+    uint8_t offset_reserved_NS;
+    uint8_t flags;
     uint16_t winsize;
     uint16_t checksum;
     uint16_t urgentptr;
@@ -64,11 +53,21 @@ struct tcp_socket {
 
     /* last acknowledgement */
     uint32_t acknum;
+
+    /* retries active */
+    int retriesactive;
+    
+    /* time of next retry */
+    struct timeval nextretry;
+
+    /* number of retries */
+    uint32_t numretries;
 };
 
 int tcp_init(void);
 void init_header(struct tcp_header*);
 struct tcp_socket* create_socket(struct sockaddr_in*);
+void active_open(struct tcp_socket* socket, struct sockaddr_in* dest);
 void close_socket(struct tcp_socket*);
 
 #endif
