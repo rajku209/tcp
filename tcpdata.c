@@ -108,6 +108,7 @@ void send_tcp_flag_msg(struct tcp_socket* tcpsock, uint8_t flags, int NS) {
     printf("Sending flags\n");
     tcphdr.seqnum = htonl(tcpsock->seqnum);
     tcphdr.acknum = htonl(tcpsock->acknum);
+    tcphdr.winsize = htons(tcpsock->local_window);
     tcphdr.flags = flags;
     tcphdr.offset_reserved_NS = (NS != 0);
     _send_data(tcpsock, &tcphdr, sizeof(struct tcp_header));

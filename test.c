@@ -1,6 +1,8 @@
 #include <arpa/inet.h>
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <netinet/in.h>
 #include <sys/select.h>
@@ -8,8 +10,23 @@
 
 #include "tcp.h"
 
+struct tcp_socket* sock = NULL;
+
+void shutdown_socket(int unused) {
+    if (sock) {
+        printf("Closing connection gracefully...\n");
+        close_socket(sock);
+        sleep(3);
+        destroy_socket(sock);
+        exit(0);
+    }
+}
+
 int main(int argc, char** argv) {
     int rv;
+
+    signal(SIGINT, &shutdown_socket);
+    
     struct sockaddr_in my_addr;
     my_addr.sin_family = AF_INET;
     my_addr.sin_port = htons(37624);
@@ -23,7 +40,7 @@ int main(int argc, char** argv) {
     memset(my_addr.sin_zero, 0, 8);
     
     tcp_init();
-    struct tcp_socket* sock = create_socket(&my_addr);
+    sock = create_socket(&my_addr);
     active_open(sock, &dest_addr);
     while (1) {
         rv = select(0, NULL, NULL, NULL, NULL);

@@ -18,7 +18,6 @@
 
 #define LOCALHOST 0x0100007f
 
-#define RETRY_SECS 2
 #define MAX_TRIES 5
 
 struct tcp_header {
@@ -72,5 +71,6 @@ void init_header(struct tcp_header*);
 struct tcp_socket* create_socket(struct sockaddr_in*);
 void active_open(struct tcp_socket* socket, struct sockaddr_in* dest);
 void close_socket(struct tcp_socket*);
+void destroy_socket(struct tcp_socket*);
 
 #endif
