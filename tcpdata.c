@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +15,8 @@
 
 int sd;
 
+pthread_mutex_t sendlock;
+
 inline uint32_t addr_to_int(struct in_addr* addr) {
     return *((uint32_t*) addr);
 }
@@ -24,6 +27,7 @@ int init_tcp_rw() {
         printf("Could not initialize socket\n");
         return 1;
     }
+    pthread_mutex_init(&sendlock, NULL);
     return 0;
 }
 
@@ -88,11 +92,15 @@ void _send_data(struct tcp_socket* tcpsock, void* data, size_t len) {
     cksum = get_checksum(&tcpsock->local_addr.sin_addr,
                          &tcpsock->remote_addr.sin_addr, data, len);
     tcphdr->checksum = cksum;
+    errno = 0;
+    sent = -1;
+    pthread_mutex_lock(&sendlock);
     sent = sendto(sd, data, len, 0, (struct sockaddr*) &tcpsock->remote_addr,
-                  sizeof(struct sockaddr_in));
+                  sizeof(tcpsock->remote_addr));
     if (sent < 0) {
         perror("Could not send data");
     }
+    pthread_mutex_unlock(&sendlock);
 }
 
 void send_tcp_flag_msg(struct tcp_socket* tcpsock, uint8_t flags, int NS) {
@@ -106,5 +114,6 @@ void send_tcp_flag_msg(struct tcp_socket* tcpsock, uint8_t flags, int NS) {
 }
 
 void halt_tcp_rw() {
+    pthread_mutex_destroy(&sendlock);
     close(sd);
 }
