@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include <netinet/in.h>
 
+// Power of 2
+#define MAXSOCKETS 16
+
 #define FLAG_CWR 0b10000000
 #define FLAG_ECE 0b01000000
 #define FLAG_URG 0b00100000
