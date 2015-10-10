@@ -6,13 +6,14 @@
 #include <string.h>
 #include <netinet/in.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include "tcp.h"
 
 struct tcp_socket* sock = NULL;
 
-void shutdown_socket(int unused) {
+void shutdown_socket(int unused __attribute__((__unused__))) {
     if (sock) {
         printf("Closing connection gracefully...\n");
         close_socket(sock);
@@ -22,7 +23,8 @@ void shutdown_socket(int unused) {
     }
 }
 
-int main(int argc, char** argv) {
+int main(int argc __attribute__((__unused__)),
+         char** argv __attribute__((__unused__))) {
     int rv;
 
     signal(SIGINT, &shutdown_socket);

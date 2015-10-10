@@ -9,7 +9,10 @@
 uint32_t addr_to_int(struct in_addr*);
 int init_tcp_rw(void);
 void* socket_read_loop(void*);
-void send_tcp_flag_msg(struct tcp_socket* tcpsock, uint8_t flags, int NS);
+void send_tcp_msg(struct tcp_socket* tcpsock, uint8_t flags,
+                  uint32_t seqnum, uint32_t acknum, void* data, size_t len);
+void send_tcp_ctl_msg(struct tcp_socket* tcpsock, uint8_t flags,
+                      uint32_t seqnum, uint32_t acknum);
 void halt_tcp_rw(void);
 
 #endif

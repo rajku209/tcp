@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include "tcp.h"
@@ -63,7 +64,7 @@ void* socket_read_loop(void* arg) {
         destaddr_nw = ((uint32_t*) buffer)[4];
         iphdr_len = (((uint8_t*) buffer)[0] & 0xF) << 2;
         msg_len = ntohs(((uint16_t*) buffer)[1]);
-        tcphdr = buffer + iphdr_len; //skip IP header
+        tcphdr = (struct tcp_header*) (((uint8_t*) buffer) + iphdr_len);
         if (srcaddr_nw != LOCALHOST &&
             get_checksum((struct in_addr*) &srcaddr_nw,
                          (struct in_addr*) &destaddr_nw,
@@ -103,15 +104,30 @@ void _send_data(struct tcp_socket* tcpsock, void* data, size_t len) {
     pthread_mutex_unlock(&sendlock);
 }
 
-void send_tcp_flag_msg(struct tcp_socket* tcpsock, uint8_t flags, int NS) {
-    struct tcp_header tcphdr;
-    printf("Sending flags\n");
-    tcphdr.seqnum = htonl(tcpsock->seqnum);
-    tcphdr.acknum = htonl(tcpsock->acknum);
-    tcphdr.winsize = htons(tcpsock->local_window);
-    tcphdr.flags = flags;
-    tcphdr.offset_reserved_NS = (NS != 0);
-    _send_data(tcpsock, &tcphdr, sizeof(struct tcp_header));
+/* The NS bit is never set in this implementation. */
+void send_tcp_msg(struct tcp_socket* tcpsock, uint8_t flags,
+                  uint32_t seqnum, uint32_t acknum,
+                  void* data, size_t data_len) {
+    void* packet = malloc(data_len + sizeof(struct tcp_header));
+    struct tcp_header* tcphdr = packet;
+    if (data_len) {
+        memcpy(tcphdr + 1, data, data_len);
+    }
+    printf("Sending\n");
+    tcphdr->seqnum = htonl(seqnum);
+    tcphdr->acknum = htonl(acknum);
+    tcphdr->winsize = htons(tcpsock->SND.WND);
+    tcphdr->urgentptr = htons(tcpsock->SND.UP);
+    tcphdr->flags = flags;
+    tcphdr->offset_reserved_NS = 0; // for now, no offset
+    _send_data(tcpsock, tcphdr, sizeof(struct tcp_header));
+    free(packet);
+}
+
+/* Like send_tcp_msg, but doesn't have a message body. */
+inline void send_tcp_ctl_msg(struct tcp_socket* tcpsock, uint8_t flags,
+                      uint32_t seqnum, uint32_t acknum) {
+    send_tcp_msg(tcpsock, flags, seqnum, acknum, NULL, 0);
 }
 
 void halt_tcp_rw() {

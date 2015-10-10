@@ -2,19 +2,20 @@
 #define TCP_H_
 
 #include <stdint.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 
 // Power of 2
 #define MAXSOCKETS 16
 
-#define FLAG_CWR 0b10000000
-#define FLAG_ECE 0b01000000
-#define FLAG_URG 0b00100000
-#define FLAG_ACK 0b00010000
-#define FLAG_PSH 0b00001000
-#define FLAG_RST 0b00000100
-#define FLAG_SYN 0b00000010
-#define FLAG_FIN 0b00000001
+#define FLAG_CWR 0x80
+#define FLAG_ECE 0x40
+#define FLAG_URG 0x20
+#define FLAG_ACK 0x10
+#define FLAG_PSH 0x08
+#define FLAG_RST 0x04
+#define FLAG_SYN 0x02
+#define FLAG_FIN 0x01
 
 #define LOCALHOST 0x0100007f
 
@@ -47,15 +48,6 @@ struct tcp_socket {
     /* current connection state */
     enum tcp_state state;
 
-    /* local window size */
-    uint16_t local_window;
-
-    /* current sequence number */
-    uint32_t seqnum;
-
-    /* last acknowledgement */
-    uint32_t acknum;
-
     /* retries active */
     int retriesactive;
     
@@ -64,6 +56,25 @@ struct tcp_socket {
 
     /* number of retries */
     uint32_t numretries;
+
+    /* Sequence Variables for Send, named to mirror RFC spec. */
+    struct {
+        uint32_t UNA; // Send unacknowledged
+        uint32_t NXT; // Send next
+        uint16_t WND; // Send window
+        uint16_t UP;  // Send urgent pointer
+        uint32_t WL1; // Segment sequence number used for last window update
+        uint32_t WL2; // Segment ACK number used for last window update
+    } SND;
+    uint32_t ISS; // Initial send sequence number
+    
+    /* Sequence Variables for Receive, named to mirror RFC spec. */
+    struct {
+        uint32_t NXT; // Receive next;
+        uint16_t WND; // Receive window
+        uint16_t UP; // Receive urgent pointer
+    } RCV;
+    uint32_t IRS; // Initial receive sequence number
 };
 
 int tcp_init(void);

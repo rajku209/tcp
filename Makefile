@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-g -Wall -pthread
+CFLAGS=-g -Wall -Wextra -D_BSD_SOURCE -pthread
 EXECUTABLE=tcptest
 
 all: $(EXECUTABLE)

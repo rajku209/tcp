@@ -39,12 +39,6 @@ const struct timeval RETRY_TIME = {
 struct tcp_socket* sockets[MAXSOCKETS];
 int next_index;
 
-void _enable_retries(struct tcp_socket* tcpsock) {
-    tcpsock->numretries = 0;
-    tcpsock->retriesactive = 1;
-    tcpsock->nextretry = RETRY_TIME;
-}
-
 void _set_timer() {
     int i;
     struct tcp_socket* curr;
@@ -66,103 +60,144 @@ void _set_timer() {
     }
 }
 
+void _switch_state(struct tcp_socket* tcpsock, enum tcp_state newstate) {
+    int retriesactive = tcpsock->retriesactive;
+    tcpsock->state = newstate;
+    switch (newstate) {
+    case LISTEN:
+    case CLOSED:
+    case FIN_WAIT_1:
+    case FIN_WAIT_2:
+        tcpsock->retriesactive = 0;
+        break;
+    default:
+        if (newstate == TIME_WAIT) {
+            tcpsock->nextretry = WAIT_TIME;
+        } else {
+            tcpsock->nextretry = RETRY_TIME;
+        }
+        tcpsock->numretries = 0;
+        tcpsock->retriesactive = 1;
+        break;
+    }
+    if (retriesactive != tcpsock->retriesactive) {
+        _set_timer();
+    }
+}
+
 void _socket_receive(struct tcp_socket* tcpsock, struct tcp_header* tcphdr,
                      size_t len) {
-    printf("Received packet for socket %d!\n", tcpsock->index);
-    if (tcphdr->flags & FLAG_RST) {
-        switch(tcpsock->state) {
-        case LISTEN:
-        case SYN_SENT:
-        case SYN_RECEIVED:
-	    printf("Connection could not be initialized\n");
-            tcpsock->state = LISTEN;
+    int got_ack;
+    uint32_t ack;
+    printf("Segment arrives for socket %d!\n", tcpsock->index);
+    switch (tcpsock->state) {
+    case ESTABLISHED:
+        printf("Receipt in ESTABLISHED state is not yet implemented\n");
+        break;
+    case CLOSE_WAIT:
+    case TIME_WAIT:
+    case CLOSED:
+        if (tcphdr->flags & FLAG_RST) {
             break;
-        default:
-	    printf("Connection lost\n");
-            tcpsock->state = CLOSED;
-            break;
+        } else if (tcphdr->flags & FLAG_ACK) {
+            send_tcp_ctl_msg(tcpsock, FLAG_RST | FLAG_ACK,
+                             0, ntohl(tcphdr->seqnum) + len);
+        } else {
+            send_tcp_ctl_msg(tcpsock, FLAG_RST, ntohl(tcphdr->acknum), 0);
         }
-        tcpsock->retriesactive = 0;
-    } else {
-        switch (tcpsock->state) {
-        case ESTABLISHED:
-            printf("Receipt in ESTABLISHED state is not yet implemented\n");
+        break;
+    case LISTEN:
+        if (tcphdr->flags & FLAG_RST) {
             break;
-        case CLOSE_WAIT:
-        case TIME_WAIT:
-        case CLOSED:
-            send_tcp_flag_msg(tcpsock, FLAG_RST, 0);
-            break;
-        case LISTEN:
-            if (tcphdr->flags == FLAG_SYN) {
-                tcpsock->state = SYN_RECEIVED;
-                tcpsock->acknum = ntohl(tcphdr->seqnum) + 1;
-                send_tcp_flag_msg(tcpsock, FLAG_SYN | FLAG_ACK, 0);
-            } else {
-                send_tcp_flag_msg(tcpsock, FLAG_RST, 0);
+        } else if (tcphdr->flags & FLAG_ACK) {
+            send_tcp_ctl_msg(tcpsock, FLAG_RST, ntohl(tcphdr->acknum), 0);
+        } else if (tcphdr->flags & FLAG_SYN) {
+            // TODO check for security/compartment, and precedence
+            tcpsock->IRS = ntohl(tcphdr->seqnum);
+            tcpsock->RCV.NXT = tcpsock->IRS + 1;
+            _switch_state(tcpsock, SYN_RECEIVED);
+            send_tcp_ctl_msg(tcpsock, FLAG_SYN | FLAG_ACK,
+                             tcpsock->ISS, tcpsock->RCV.NXT);
+        }
+        break;
+    case SYN_SENT:
+        got_ack = 0;
+        if (tcphdr->flags & FLAG_ACK) {
+            ack = ntohl(tcphdr->acknum);
+            if (ack <= tcpsock->ISS || ack > tcpsock->SND.NXT) {
+                if (tcphdr->flags & FLAG_RST) {
+                    break;
+                }
+                send_tcp_ctl_msg(tcpsock, FLAG_RST, ack, 0);
+                break;
             }
-            break;
-        case SYN_SENT:
-            if (tcphdr->flags == FLAG_SYN) {
-                send_tcp_flag_msg(tcpsock, FLAG_ACK, 0);
-                tcpsock->state = SYN_RECEIVED;
-            } else if (tcphdr->flags == (FLAG_SYN | FLAG_ACK)
-                       && ntohl(tcphdr->acknum) == tcpsock->seqnum + 1) {
-                tcpsock->state = ESTABLISHED;
-                tcpsock->seqnum++;
-                tcpsock->acknum = ntohl(tcphdr->seqnum) + 1;
-                send_tcp_flag_msg(tcpsock, FLAG_ACK, 0);
-                tcpsock->retriesactive = 0; // we don't expect a reponse to this
-            } else {
-                send_tcp_flag_msg(tcpsock, FLAG_RST, 0);
-            }
-            break;
-        case SYN_RECEIVED:
-            if (tcphdr->flags == FLAG_ACK) {
-                send_tcp_flag_msg(tcpsock, FLAG_ACK, 0);
-                tcpsock->state = ESTABLISHED;
-            } else {
-                send_tcp_flag_msg(tcpsock, FLAG_RST, 0);
-            }
-            break;
-        case FIN_WAIT_1:
-            if (tcphdr->flags == FLAG_ACK) {
-                tcpsock->state = FIN_WAIT_2;
-            } else if (tcphdr->flags == FLAG_FIN) {
-                send_tcp_flag_msg(tcpsock, FLAG_ACK, 0);
-                _enable_retries(tcpsock);
-                tcpsock->state = CLOSING;
-            } else {
-                send_tcp_flag_msg(tcpsock, FLAG_RST, 0);
-            }
-            break;
-        case FIN_WAIT_2:
-            if (tcphdr->flags == FLAG_FIN) {
-                send_tcp_flag_msg(tcpsock, FLAG_ACK, 0);
-                tcpsock->state = TIME_WAIT;
-                _enable_retries(tcpsock);
-                tcpsock->nextretry = WAIT_TIME;
-            } else {
-                send_tcp_flag_msg(tcpsock, FLAG_RST, 0);
-            }
-            break;
-        case CLOSING:
-            if (tcphdr->flags == FLAG_ACK) {
-                tcpsock->state = TIME_WAIT;
-            } else {
-                send_tcp_flag_msg(tcpsock, FLAG_RST, 0);
-            }
-            break;
-        case LAST_ACK:
-            if (tcphdr->flags == FLAG_ACK) {
-                tcpsock->state = CLOSED;
-                tcpsock->retriesactive = 0;
-            } else {
-                send_tcp_flag_msg(tcpsock, FLAG_RST, 0);
+            got_ack = (ack >= tcpsock->SND.UNA && ack <= tcpsock->SND.NXT);
+            // got_ack is 1 if the ack is acceptable, 0 otherwise
+        }
+        if (tcphdr->flags & FLAG_RST) {
+            if (got_ack) {
+                printf("Connection reset on socket %d\n", tcpsock->index);
+                _switch_state(tcpsock, CLOSED);
             }
             break;
         }
+
+        // TODO check security/compartment and precedence
+
+        if (tcphdr->flags & FLAG_SYN) {
+            tcpsock->IRS = ntohl(tcphdr->seqnum);
+            tcpsock->RCV.NXT = tcpsock->IRS + 1;
+            if (got_ack) {
+                tcpsock->SND.UNA = ack;
+                // TODO stop trying to retransmit messages before SND.UNA
+            }
+            if (tcpsock->SND.UNA > tcpsock->ISS) { // if we got SYN-ACK...
+                _switch_state(tcpsock, ESTABLISHED);
+                send_tcp_ctl_msg(tcpsock, FLAG_ACK,
+                                 tcpsock->SND.NXT, tcpsock->RCV.NXT);
+                // Include other controls queued for transmission
+            } else { // handle simultaneous connection initiation
+                _switch_state(tcpsock, SYN_RECEIVED);
+                send_tcp_ctl_msg(tcpsock, FLAG_SYN | FLAG_ACK,
+                                 tcpsock->ISS, tcpsock->RCV.NXT);
+            }
+        }
+        break;
+    case SYN_RECEIVED:
+        if (tcphdr->flags == FLAG_ACK) {
+            send_tcp_ctl_msg(tcpsock, FLAG_ACK,
+                             tcpsock->SND.NXT, tcpsock->RCV.NXT);
+            _switch_state(tcpsock, ESTABLISHED);
+        }
+        break;
+    case FIN_WAIT_1:
+        if (tcphdr->flags == FLAG_ACK) {
+            _switch_state(tcpsock, FIN_WAIT_2);
+        } else if (tcphdr->flags == FLAG_FIN) {
+            send_tcp_ctl_msg(tcpsock, FLAG_ACK,
+                             tcpsock->SND.NXT, tcpsock->RCV.NXT);
+            _switch_state(tcpsock, CLOSING);
+        }
+        break;
+    case FIN_WAIT_2:
+        if (tcphdr->flags == FLAG_FIN) {
+            send_tcp_ctl_msg(tcpsock, FLAG_ACK,
+                             tcpsock->SND.NXT, tcpsock->RCV.NXT);
+            _switch_state(tcpsock, TIME_WAIT);
+        }
+        break;
+    case CLOSING:
+        if (tcphdr->flags == FLAG_ACK) {
+            _switch_state(tcpsock, TIME_WAIT);
+        }
+        break;
+    case LAST_ACK:
+        if (tcphdr->flags == FLAG_ACK) {
+            _switch_state(tcpsock, CLOSED);
+        }
+        break;
     }
+    fflush(stdout);
     _set_timer();
 }
 
@@ -184,7 +219,8 @@ void _dispatch_packet(struct tcp_header* tcphdr, size_t packet_len,
     }
 }
 
-void _tcp_timer_handler(int unused) {
+void _tcp_timer_handler(int unused __attribute__((__unused__))) {
+    // I'm going to have to revamp this code
     int i;
     struct tcp_socket* curr;
     for (i = 0; i < MAXSOCKETS; i++) {
@@ -206,18 +242,19 @@ void _tcp_timer_handler(int unused) {
                 curr->retriesactive = 0;
                 break;
             case SYN_SENT:
-                send_tcp_flag_msg(curr, FLAG_SYN, 0);
+                send_tcp_ctl_msg(curr, FLAG_SYN, curr->SND.NXT, curr->RCV.NXT);
                 break;
             case SYN_RECEIVED:
-                send_tcp_flag_msg(curr, FLAG_SYN | FLAG_ACK, 0);
+                send_tcp_ctl_msg(curr, FLAG_SYN | FLAG_ACK,
+                                 curr->SND.NXT, curr->RCV.NXT);
                 break;
             case CLOSE_WAIT:
             case CLOSING:
-                send_tcp_flag_msg(curr, FLAG_ACK, 0);
+                send_tcp_ctl_msg(curr, FLAG_ACK, curr->SND.NXT, curr->RCV.NXT);
                 break;
             case FIN_WAIT_1:
             case LAST_ACK:
-                send_tcp_flag_msg(curr, FLAG_FIN, 0);
+                send_tcp_ctl_msg(curr, FLAG_FIN, curr->SND.NXT, curr->RCV.NXT);
                 break;
             case ESTABLISHED:
                 printf("Retry behavior for ESTABLISHED not yet implemented\n");
@@ -251,13 +288,10 @@ void active_open(struct tcp_socket* tcpsock, struct sockaddr_in* dest) {
     if (addr_to_int(&dest->sin_addr) == LOCALHOST) {
         *((uint32_t*) &tcpsock->local_addr.sin_addr) = LOCALHOST;
     }
-    /* Some initialization to reset the connection. */
-    tcpsock->acknum = 0;
-    tcpsock->seqnum = 0x012faded;
+    
     /* Initiate the TCP handshake */
-    send_tcp_flag_msg(tcpsock, FLAG_SYN, 0);
-    _enable_retries(tcpsock);
-    tcpsock->state = SYN_SENT;
+    send_tcp_msg(tcpsock, FLAG_SYN, tcpsock->ISS, 0, NULL, 0);
+    _switch_state(tcpsock, SYN_SENT);
     _set_timer();
 }
 
@@ -277,11 +311,24 @@ struct tcp_socket* create_socket(struct sockaddr_in* bindto) {
     /* For safety. You can remove this memset. */
     memset(&tcpsock->remote_addr, 0, sizeof(struct sockaddr_in));
     tcpsock->state = CLOSED;
-    tcpsock->local_window = 1024;
-    tcpsock->seqnum = 0;
     tcpsock->retriesactive = 0;
     memset(&tcpsock->nextretry, 0, sizeof(tcpsock->nextretry));
     tcpsock->numretries = 0;
+
+    /* Some initialization to reset the connection. */
+    tcpsock->ISS = 0x012faded; // TODO randomly generate this
+    tcpsock->SND.UNA = tcpsock->ISS;
+    tcpsock->SND.NXT = tcpsock->ISS + 1;
+    tcpsock->SND.WND = 1024;
+    /* I don't need to initialize these fields, but I set them anyway. */
+    tcpsock->SND.WL1 = 0xFFFFFFFF;
+    tcpsock->SND.WL2 = 0xFFFFFFFF;
+    tcpsock->RCV.NXT = 0xFFFFFFFF;
+    tcpsock->RCV.WND = 0xFFFF;
+    tcpsock->RCV.UP = 0xFFFF;
+    tcpsock->IRS = 0xFFFFFFFF;
+    
+    
     sockets[next_index] = tcpsock;
     return tcpsock;
 }
@@ -292,19 +339,16 @@ void close_socket(struct tcp_socket* tcpsock) {
     switch(tcpsock->state) {
     case LISTEN:
     case SYN_SENT:
-        tcpsock->state = CLOSED;
-        tcpsock->retriesactive = 0;
+        _switch_state(tcpsock, CLOSED);
         break;
     case SYN_RECEIVED:
     case ESTABLISHED:
-        tcpsock->state = FIN_WAIT_1;
-        send_tcp_flag_msg(tcpsock, FLAG_FIN, 0);
-        _enable_retries(tcpsock);
+        _switch_state(tcpsock, FIN_WAIT_1);
+        send_tcp_ctl_msg(tcpsock, FLAG_FIN, tcpsock->SND.NXT, tcpsock->RCV.NXT);
         break;
     case CLOSE_WAIT:
-        tcpsock->state = LAST_ACK;
-        send_tcp_flag_msg(tcpsock, FLAG_FIN, 0);
-        _enable_retries(tcpsock);
+        _switch_state(tcpsock, LAST_ACK);
+        send_tcp_ctl_msg(tcpsock, FLAG_FIN, tcpsock->SND.NXT, tcpsock->RCV.NXT);
         break;
     default:
         printf("Attempted to close socket in invalid state\n");
