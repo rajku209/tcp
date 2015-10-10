@@ -18,7 +18,11 @@ int sd;
 
 pthread_mutex_t sendlock;
 
-inline uint32_t addr_to_int(struct in_addr* addr) {
+/* The only link I have to tcp.c; this function is called when I find a valid
+   TCP packet. */
+void _dispatch_packet(struct tcp_header*, size_t, uint32_t, uint32_t);
+
+uint32_t addr_to_int(struct in_addr* addr) {
     return *((uint32_t*) addr);
 }
 
@@ -32,7 +36,7 @@ int init_tcp_rw() {
     return 0;
 }
 
-void* socket_read_loop(void* arg) {
+void* socket_read_loop(void* unused __attribute__((__unused__))) {
     void* buffer = malloc(4096);
     ssize_t amt;
     struct tcp_header* tcphdr;
@@ -41,8 +45,6 @@ void* socket_read_loop(void* arg) {
     uint32_t iphdr_len;
     uint16_t msg_len;
 
-    void (*onreceive)(struct tcp_header*, size_t, uint32_t, uint32_t) = arg;
-    
     while (1) {
         amt = recv(sd, buffer, 4096, 0);
         if (amt == -1) {
@@ -74,29 +76,29 @@ void* socket_read_loop(void* arg) {
         }
         
         // We received a valid packet
-        onreceive(tcphdr, msg_len - iphdr_len, srcaddr_nw, destaddr_nw);
+        _dispatch_packet(tcphdr, msg_len - iphdr_len, srcaddr_nw, destaddr_nw);
     }
     free(buffer);
     return NULL;
 }
 
-void _send_data(struct tcp_socket* tcpsock, void* data, size_t len) {
+void _send_data(struct tcp_socket* tcpsock,
+                struct tcp_header* tcpseg, size_t len) {
     ssize_t sent;
     uint16_t cksum;
     /* Set the relevant fields of the TCP header. */
-    struct tcp_header* tcphdr = data;
-    tcphdr->srcport = tcpsock->local_addr.sin_port;
-    tcphdr->destport = tcpsock->remote_addr.sin_port;
-    tcphdr->offset_reserved_NS |= (((uint8_t) len) << 2);
-    tcphdr->urgentptr = 0; // I never send out urgent messages
-    tcphdr->checksum = 0;
+    tcpseg->srcport = tcpsock->local_addr.sin_port;
+    tcpseg->destport = tcpsock->remote_addr.sin_port;
+    tcpseg->offset_reserved_NS |= (((uint8_t) len) << 2);
+    tcpseg->urgentptr = 0; // I never send out urgent messages
+    tcpseg->checksum = 0;
     cksum = get_checksum(&tcpsock->local_addr.sin_addr,
-                         &tcpsock->remote_addr.sin_addr, data, len);
-    tcphdr->checksum = cksum;
+                         &tcpsock->remote_addr.sin_addr, tcpseg, len);
+    tcpseg->checksum = cksum;
     errno = 0;
     sent = -1;
     pthread_mutex_lock(&sendlock);
-    sent = sendto(sd, data, len, 0, (struct sockaddr*) &tcpsock->remote_addr,
+    sent = sendto(sd, tcpseg, len, 0, (struct sockaddr*) &tcpsock->remote_addr,
                   sizeof(tcpsock->remote_addr));
     if (sent < 0) {
         perror("Could not send data");
@@ -107,25 +109,24 @@ void _send_data(struct tcp_socket* tcpsock, void* data, size_t len) {
 /* The NS bit is never set in this implementation. */
 void send_tcp_msg(struct tcp_socket* tcpsock, uint8_t flags,
                   uint32_t seqnum, uint32_t acknum,
-                  void* data, size_t data_len) {
-    void* packet = malloc(data_len + sizeof(struct tcp_header));
-    struct tcp_header* tcphdr = packet;
-    if (data_len) {
-        memcpy(tcphdr + 1, data, data_len);
+                  void* msgbody, size_t msgbody_len) {
+    struct tcp_header* tcpseg = malloc(sizeof(struct tcp_header) + msgbody_len);
+    if (msgbody_len) {
+        memcpy(tcpseg + 1, msgbody, msgbody_len);
     }
     printf("Sending\n");
-    tcphdr->seqnum = htonl(seqnum);
-    tcphdr->acknum = htonl(acknum);
-    tcphdr->winsize = htons(tcpsock->SND.WND);
-    tcphdr->urgentptr = htons(tcpsock->SND.UP);
-    tcphdr->flags = flags;
-    tcphdr->offset_reserved_NS = 0; // for now, no offset
-    _send_data(tcpsock, tcphdr, sizeof(struct tcp_header));
-    free(packet);
+    tcpseg->seqnum = htonl(seqnum);
+    tcpseg->acknum = htonl(acknum);
+    tcpseg->winsize = htons(tcpsock->SND.WND);
+    tcpseg->urgentptr = htons(tcpsock->SND.UP);
+    tcpseg->flags = flags;
+    tcpseg->offset_reserved_NS = 0; // for now, no offset
+    _send_data(tcpsock, tcpseg, sizeof(struct tcp_header) + msgbody_len);
+    free(tcpseg);
 }
 
 /* Like send_tcp_msg, but doesn't have a message body. */
-inline void send_tcp_ctl_msg(struct tcp_socket* tcpsock, uint8_t flags,
+void send_tcp_ctl_msg(struct tcp_socket* tcpsock, uint8_t flags,
                       uint32_t seqnum, uint32_t acknum) {
     send_tcp_msg(tcpsock, flags, seqnum, acknum, NULL, 0);
 }

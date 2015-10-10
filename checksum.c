@@ -2,8 +2,10 @@
 #include <stdint.h>
 #include <netinet/in.h>
 
+#include "tcp.h"
+
 uint16_t get_checksum(struct in_addr* src, struct in_addr* dest,
-                      void* data, size_t len) {
+                      struct tcp_header* tcpseg, size_t len) {
     struct {
         struct in_addr srcaddr;
         struct in_addr destaddr;
@@ -19,13 +21,13 @@ uint16_t get_checksum(struct in_addr* src, struct in_addr* dest,
 
     /* I'm assuming here that we don't overflow more than 1 << 16 times. */
     uint32_t total = 0;
-    uint16_t* pshdr_start = (uint16_t*) &pseudoheader;
     uint16_t* current;
-    for (current = pshdr_start;
+    for (current = (uint16_t*) &pseudoheader;
          current < (uint16_t*) (&pseudoheader + 1); current++) {
         total += (uint32_t) *current;
     }
-    for (current = data; current < (uint16_t*) (data + len); current++) {
+    for (current = (uint16_t*) tcpseg;
+         current < (uint16_t*) (((uint8_t*) tcpseg) + len); current++) {
         total += (uint32_t) *current;
     }
     

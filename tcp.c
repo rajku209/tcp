@@ -276,7 +276,7 @@ int tcp_init() {
     }
     memset(sockets, 0, MAXSOCKETS * sizeof(struct tcp_socket*));
     next_index = 0;
-    pthread_create(&readthread, NULL, &socket_read_loop, _dispatch_packet);
+    pthread_create(&readthread, NULL, &socket_read_loop, NULL);
     signal(SIGALRM, _tcp_timer_handler);
     memset(&time_left, 0, sizeof(time_left));
     time_left.it_value.tv_sec = 2;
