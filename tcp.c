@@ -27,35 +27,83 @@ const struct itimerval ZERO_TIME = {
         .tv_usec = 0
     }
 };
-const struct timeval WAIT_TIME = {
+const struct timespec WAIT_TIME = {
     .tv_sec = 60,
-    .tv_usec = 0
+    .tv_nsec = 0
 };
-const struct timeval RETRY_TIME = {
+const struct timespec RETRY_TIME = {
     .tv_sec = 2,
-    .tv_usec = 0
+    .tv_nsec = 0
 };
 
 struct tcp_socket* sockets[MAXSOCKETS];
 int next_index;
 
+/* Sets the time in DEST to be the current time plus DELAY. */
+void delay_to_abs(struct timespec* dest, const struct timespec* delay) {
+    clock_gettime(CLOCK_MONOTONIC_COARSE, dest);
+    dest->tv_sec += delay->tv_sec;
+    dest->tv_nsec += delay->tv_nsec;
+    if (dest->tv_nsec >= 1000000000) {
+        dest->tv_sec += 1;
+        dest->tv_nsec -= 1000000000;
+    }
+}
+
+/* Sets the time in DEST to be the time in ABS minus the current time. */
+void abs_to_delay(struct timespec* dest, const struct timespec* abs) {
+    clock_gettime(CLOCK_MONOTONIC_COARSE, dest);
+    dest->tv_sec = abs->tv_sec - dest->tv_sec;
+    dest->tv_nsec = abs->tv_nsec - dest->tv_nsec;
+    if (dest->tv_nsec < 0) {
+        dest->tv_sec -= 1;
+        dest->tv_nsec += 1000000000;
+    }
+}
+
+int cmp_timespec(const struct timespec* x, const struct timespec* y) {
+    if (x->tv_sec == y->tv_sec) {
+        if (x->tv_nsec == y->tv_nsec) {
+            return 0;
+        } else if (x->tv_nsec > y->tv_nsec) {
+            return 1;
+        } else {
+            return -1;
+        }
+    } else if (x->tv_sec > y->tv_sec) {
+        return 1;
+    } else {
+        return -1;
+    }
+}
+
 void _set_timer() {
     int i;
     struct tcp_socket* curr;
-    struct timeval* soonest = NULL;
+    struct timespec* soonest = NULL;
+    struct timespec diff;
     setitimer(ITIMER_REAL, &ZERO_TIME, NULL); // cancel existing timer
     for (i = 0; i < MAXSOCKETS; i++) {
         curr = sockets[i];
         if (curr && curr->retriesactive) {
             if (!soonest || curr->nextretry.tv_sec < soonest->tv_sec ||
                 (curr->nextretry.tv_sec == soonest->tv_sec &&
-                 curr->nextretry.tv_usec < soonest->tv_usec)) {
+                 curr->nextretry.tv_nsec < soonest->tv_nsec)) {
                 soonest = &curr->nextretry;
             }
         }
     }
     if (soonest) {
-        time_left.it_value = *soonest;
+        abs_to_delay(&diff, soonest);
+        time_left.it_value.tv_sec = diff.tv_sec;
+        time_left.it_value.tv_usec = (diff.tv_nsec / 1000) +
+            ((diff.tv_nsec % 1000) > 0);
+        if (time_left.it_value.tv_sec < 0 ||
+            (time_left.it_value.tv_sec == 0 &&
+             time_left.it_value.tv_usec == 0)) {
+            time_left.it_value.tv_sec = 0;
+            time_left.it_value.tv_usec = 1;
+        }
         setitimer(ITIMER_REAL, &time_left, NULL);
     }
 }
@@ -72,9 +120,9 @@ void _switch_state(struct tcp_socket* tcpsock, enum tcp_state newstate) {
         break;
     default:
         if (newstate == TIME_WAIT) {
-            tcpsock->nextretry = WAIT_TIME;
+            delay_to_abs(&tcpsock->nextretry, &WAIT_TIME);
         } else {
-            tcpsock->nextretry = RETRY_TIME;
+            delay_to_abs(&tcpsock->nextretry, &RETRY_TIME);
         }
         tcpsock->numretries = 0;
         tcpsock->retriesactive = 1;
@@ -223,15 +271,17 @@ void _tcp_timer_handler(int unused __attribute__((__unused__))) {
     // I'm going to have to revamp this code
     int i;
     struct tcp_socket* curr;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
     for (i = 0; i < MAXSOCKETS; i++) {
         curr = sockets[i];
-        if (curr && curr->retriesactive) {
+        if (curr && curr->retriesactive &&
+            cmp_timespec(&curr->nextretry, &now) <= 0) {
             if(++curr->numretries >= MAX_TRIES) {
                 // GIVE UP
                 printf("Exceeded maximum retries: give up\n");
                 // TODO Do I need to do anything else here?
-                curr->state = TIME_WAIT;
-                curr->nextretry = WAIT_TIME;
+                _switch_state(curr, TIME_WAIT);
                 continue;
             }
             switch (curr->state) {
@@ -263,6 +313,9 @@ void _tcp_timer_handler(int unused __attribute__((__unused__))) {
                 curr->retriesactive = 0;
                 curr->state = CLOSED;
                 break;
+            }
+            if (curr->retriesactive) {
+                delay_to_abs(&curr->nextretry, &RETRY_TIME);
             }
         }
     }

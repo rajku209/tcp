@@ -52,7 +52,7 @@ struct tcp_socket {
     int retriesactive;
     
     /* time of next retry */
-    struct timeval nextretry;
+    struct timespec nextretry;
 
     /* number of retries */
     uint32_t numretries;
