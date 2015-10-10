@@ -6,8 +6,8 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "tcp.h"
 #include "checksum.h"
+#include "tcp.h"
 
 /* This file contains the low-level utilities for sending out data via
    a socket and reading data from a socket.
@@ -21,10 +21,6 @@ pthread_mutex_t sendlock;
 /* The only link I have to tcp.c; this function is called when I find a valid
    TCP packet. */
 void _dispatch_packet(struct tcp_header*, size_t, uint32_t, uint32_t);
-
-uint32_t addr_to_int(struct in_addr* addr) {
-    return *((uint32_t*) addr);
-}
 
 int init_tcp_rw() {
     sd = socket(PF_INET, SOCK_RAW, IPPROTO_TCP);

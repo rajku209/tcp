@@ -4,8 +4,8 @@ EXECUTABLE=tcptest
 
 all: $(EXECUTABLE)
 
-$(EXECUTABLE): test.o tcp.o tcpdata.o checksum.o
-	$(CC) $(CFLAGS) test.o tcp.o tcpdata.o checksum.o -o $(EXECUTABLE)
+$(EXECUTABLE): test.o tcp.o tcpdata.o checksum.o utils.o
+	$(CC) $(CFLAGS) test.o tcp.o tcpdata.o checksum.o utils.o -o $(EXECUTABLE)
 
 test.o: test.c
 	$(CC) -c $(CFLAGS) test.c -o test.o
@@ -18,6 +18,9 @@ tcpdata.o: tcpdata.c
 
 checksum.o: checksum.c
 	$(CC) -c $(CFLAGS) checksum.c -o checksum.o
+	
+utils.o: utils.c
+	$(CC) -c $(CFLAGS) utils.c -o utils.o
 
 clean:
 	rm -f $(EXECUTABLE) *~ *.o

@@ -15,6 +15,7 @@
 #include "checksum.h"
 #include "tcp.h"
 #include "tcpdata.h"
+#include "utils.h"
 
 struct itimerval time_left;
 const struct itimerval ZERO_TIME = {
@@ -38,44 +39,6 @@ const struct timespec RETRY_TIME = {
 
 struct tcp_socket* sockets[MAXSOCKETS];
 int next_index;
-
-/* Sets the time in DEST to be the current time plus DELAY. */
-void delay_to_abs(struct timespec* dest, const struct timespec* delay) {
-    clock_gettime(CLOCK_MONOTONIC_COARSE, dest);
-    dest->tv_sec += delay->tv_sec;
-    dest->tv_nsec += delay->tv_nsec;
-    if (dest->tv_nsec >= 1000000000) {
-        dest->tv_sec += 1;
-        dest->tv_nsec -= 1000000000;
-    }
-}
-
-/* Sets the time in DEST to be the time in ABS minus the current time. */
-void abs_to_delay(struct timespec* dest, const struct timespec* abs) {
-    clock_gettime(CLOCK_MONOTONIC_COARSE, dest);
-    dest->tv_sec = abs->tv_sec - dest->tv_sec;
-    dest->tv_nsec = abs->tv_nsec - dest->tv_nsec;
-    if (dest->tv_nsec < 0) {
-        dest->tv_sec -= 1;
-        dest->tv_nsec += 1000000000;
-    }
-}
-
-int cmp_timespec(const struct timespec* x, const struct timespec* y) {
-    if (x->tv_sec == y->tv_sec) {
-        if (x->tv_nsec == y->tv_nsec) {
-            return 0;
-        } else if (x->tv_nsec > y->tv_nsec) {
-            return 1;
-        } else {
-            return -1;
-        }
-    } else if (x->tv_sec > y->tv_sec) {
-        return 1;
-    } else {
-        return -1;
-    }
-}
 
 void _set_timer() {
     int i;
@@ -256,8 +219,8 @@ void _dispatch_packet(struct tcp_header* tcphdr, size_t packet_len,
     for (i = 0; i < MAXSOCKETS; i++) {
         if (sockets[i]) {
             curr = sockets[i];
-            if (addr_to_int(&curr->local_addr.sin_addr) == destaddr_nw &&
-                addr_to_int(&curr->remote_addr.sin_addr) == srcaddr_nw &&
+            if (curr->local_addr.sin_addr.s_addr == destaddr_nw &&
+                curr->remote_addr.sin_addr.s_addr == srcaddr_nw &&
                 curr->local_addr.sin_port == tcphdr->destport &&
                 curr->remote_addr.sin_port == tcphdr->srcport) {
                 _socket_receive(curr, tcphdr, packet_len);
@@ -338,7 +301,7 @@ int tcp_init() {
 
 void active_open(struct tcp_socket* tcpsock, struct sockaddr_in* dest) {
     tcpsock->remote_addr = *dest;
-    if (addr_to_int(&dest->sin_addr) == LOCALHOST) {
+    if (dest->sin_addr.s_addr == LOCALHOST) {
         *((uint32_t*) &tcpsock->local_addr.sin_addr) = LOCALHOST;
     }
     

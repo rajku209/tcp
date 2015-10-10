@@ -6,7 +6,6 @@
 
 #include "tcp.h"
 
-uint32_t addr_to_int(struct in_addr*);
 int init_tcp_rw(void);
 void* socket_read_loop(void*);
 void send_tcp_msg(struct tcp_socket* tcpsock, uint8_t flags,
