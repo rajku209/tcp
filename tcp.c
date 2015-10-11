@@ -246,7 +246,7 @@ void _dispatch_packet(struct tcp_header* tcphdr, size_t packet_len,
     }
 }
 
-void _tcp_timer_handler(int unused __attribute__((__unused__))) {
+void _tcp_perform_retries() {
     int i;
     struct tcp_socket* tcpsock;
     struct timespec now;
@@ -295,15 +295,48 @@ void _tcp_timer_handler(int unused __attribute__((__unused__))) {
     _set_timer();
 }
 
+void* tcp_timer_loop(void* arg __attribute__((__unused__))) {
+    sigset_t waitfor;
+    int signal;
+    sigemptyset(&waitfor);
+    sigaddset(&waitfor, SIGALRM);
+    while (1) {
+        if ((errno = sigwait(&waitfor, &signal)) || signal != SIGALRM) {
+            if (errno) {
+                perror("Could not wait for SIGALRM");
+            } else {
+                printf("Unsolicited signal %s\n", strsignal(signal));
+            }
+            pthread_exit(NULL);
+        }
+        _tcp_perform_retries();
+    }
+    return NULL;
+}
+
 int tcp_init() {
     pthread_t readthread;
+    pthread_t retrythread;
+    sigset_t toblock;
     if (init_tcp_rw()) {
         return -1;
     }
+
+    /* We block SIGALRM in all threads so the signal is not handled by an
+       asynchronous handler. Instead I set up my own POSIX thread to handle
+       the signal.
+
+       I'm avoiding an asynchronous handler because it allows me to use
+       synchronization primitives like locks that I wouldn't be able to use
+       in an asynchronous signal handler. */
+    sigemptyset(&toblock);
+    sigaddset(&toblock, SIGALRM);
+    pthread_sigmask(SIG_BLOCK, &toblock, NULL);
+    
     memset(sockets, 0, MAXSOCKETS * sizeof(struct tcp_socket*));
     next_index = 0;
     pthread_create(&readthread, NULL, &socket_read_loop, NULL);
-    signal(SIGALRM, _tcp_timer_handler);
+    pthread_create(&retrythread, NULL, &tcp_timer_loop, NULL);
     memset(&time_left, 0, sizeof(time_left));
     time_left.it_value.tv_sec = 2;
     return 0;
