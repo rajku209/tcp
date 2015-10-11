@@ -1,6 +1,7 @@
 #ifndef TCP_H_
 #define TCP_H_
 
+#include <pthread.h>
 #include <stdint.h>
 #include <sys/time.h>
 #include <netinet/in.h>
@@ -20,6 +21,9 @@
 #define LOCALHOST 0x0100007f
 
 #define MAX_TRIES 5
+
+#define SENDBUFLEN 256
+#define RETRBUFLEN 256
 
 struct tcp_header {
     uint16_t srcport;
@@ -56,6 +60,13 @@ struct tcp_socket {
 
     /* number of retries */
     uint32_t numretries;
+
+    /* send and retransmission buffers */
+    uint8_t sendbuf[SENDBUFLEN];
+    uint8_t retrbuf[RETRBUFLEN];
+
+    /* locks for retransimission buffer */
+    pthread_mutex_t retrbuf_lock;
 
     /* Sequence Variables for Send, named to mirror RFC spec. */
     struct {

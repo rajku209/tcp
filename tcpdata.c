@@ -8,6 +8,7 @@
 
 #include "checksum.h"
 #include "tcp.h"
+#include "utils.h"
 
 /* This file contains the low-level utilities for sending out data via
    a socket and reading data from a socket.
@@ -78,35 +79,30 @@ void* socket_read_loop(void* unused __attribute__((__unused__))) {
     return NULL;
 }
 
-void _send_data(struct tcp_socket* tcpsock,
-                struct tcp_header* tcpseg, size_t len) {
-    ssize_t sent;
-    uint16_t cksum;
-    /* Set the relevant fields of the TCP header. */
-    tcpseg->srcport = tcpsock->local_addr.sin_port;
-    tcpseg->destport = tcpsock->remote_addr.sin_port;
-    tcpseg->offset_reserved_NS |= (((uint8_t) len) << 2);
-    tcpseg->urgentptr = 0; // I never send out urgent messages
-    tcpseg->checksum = 0;
-    cksum = get_checksum(&tcpsock->local_addr.sin_addr,
-                         &tcpsock->remote_addr.sin_addr, tcpseg, len);
-    tcpseg->checksum = cksum;
+/* Should not be used directly except to transmit fully formed segments (which
+   may be useful, for example, to send retries. */
+int transmit_segment(struct tcp_socket* tcpsock,
+                     struct tcp_header* tcpseg, size_t seglen) {
+    ssize_t sent = -1;
     errno = 0;
-    sent = -1;
     pthread_mutex_lock(&sendlock);
-    sent = sendto(sd, tcpseg, len, 0, (struct sockaddr*) &tcpsock->remote_addr,
+    sent = sendto(sd, tcpseg, seglen, 0,
+                  (struct sockaddr*) &tcpsock->remote_addr,
                   sizeof(tcpsock->remote_addr));
     if (sent < 0) {
         perror("Could not send data");
     }
     pthread_mutex_unlock(&sendlock);
+    return sent;
 }
 
 /* The NS bit is never set in this implementation. */
 void send_tcp_msg(struct tcp_socket* tcpsock, uint8_t flags,
                   uint32_t seqnum, uint32_t acknum,
-                  void* msgbody, size_t msgbody_len) {
-    struct tcp_header* tcpseg = malloc(sizeof(struct tcp_header) + msgbody_len);
+                  void* msgbody, size_t msgbody_len, int retransmit) {
+    uint16_t cksum;
+    size_t len = msgbody_len + sizeof(struct tcp_header);
+    struct tcp_header* tcpseg = malloc(len);
     if (msgbody_len) {
         memcpy(tcpseg + 1, msgbody, msgbody_len);
     }
@@ -117,14 +113,29 @@ void send_tcp_msg(struct tcp_socket* tcpsock, uint8_t flags,
     tcpseg->urgentptr = htons(tcpsock->SND.UP);
     tcpseg->flags = flags;
     tcpseg->offset_reserved_NS = 0; // for now, no offset
-    _send_data(tcpsock, tcpseg, sizeof(struct tcp_header) + msgbody_len);
+    /* Set the relevant fields of the TCP header. */
+    tcpseg->srcport = tcpsock->local_addr.sin_port;
+    tcpseg->destport = tcpsock->remote_addr.sin_port;
+    tcpseg->offset_reserved_NS |= (((uint8_t) len) << 2);
+    tcpseg->urgentptr = 0; // I never send out urgent messages
+    tcpseg->checksum = 0;
+    cksum = get_checksum(&tcpsock->local_addr.sin_addr,
+                         &tcpsock->remote_addr.sin_addr, tcpseg, len);
+    tcpseg->checksum = cksum;
+    transmit_segment(tcpsock, tcpseg, len);
+    if (retransmit) {
+        // Put this segment on the retransmit queue
+        if (cbuf_write_segment(tcpsock->retrbuf, (uint8_t*) tcpseg, len) < 0) {
+            printf("Retransmit queue is full for socket %d\n", tcpsock->index);
+        }
+    }
     free(tcpseg);
 }
 
 /* Like send_tcp_msg, but doesn't have a message body. */
 void send_tcp_ctl_msg(struct tcp_socket* tcpsock, uint8_t flags,
-                      uint32_t seqnum, uint32_t acknum) {
-    send_tcp_msg(tcpsock, flags, seqnum, acknum, NULL, 0);
+                      uint32_t seqnum, uint32_t acknum, int retransmit) {
+    send_tcp_msg(tcpsock, flags, seqnum, acknum, NULL, 0, retransmit);
 }
 
 void halt_tcp_rw() {
