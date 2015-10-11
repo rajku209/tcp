@@ -25,6 +25,11 @@
 #define SENDBUFLEN 256
 #define RETRBUFLEN 256
 
+/*
+ * This TCP library makes use of SIGALRM. User code should avoid using this
+ * function in any way.
+ */
+
 struct tcp_header {
     uint16_t srcport;
     uint16_t destport;

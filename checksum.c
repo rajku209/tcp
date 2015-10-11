@@ -19,7 +19,6 @@ uint16_t get_checksum(struct in_addr* src, struct in_addr* dest,
     pseudoheader.protocol = 6; // TCP
     pseudoheader.tcplen = (uint16_t) htons(len);
 
-    /* I'm assuming here that we don't overflow more than 1 << 16 times. */
     uint32_t total = 0;
     uint16_t* current;
     for (current = (uint16_t*) &pseudoheader;
