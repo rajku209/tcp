@@ -278,10 +278,8 @@ void _socket_receive(struct tcp_socket* tcpsock, uint32_t srcaddr_nw,
             switch(tcpsock->state) {
             case SYN_RECEIVED:
                 if (ack >= tcpsock->SND.UNA && ack <= tcpsock->SND.NXT) {
-                    tcpsock->SND.UNA = ack;
-                    _process_ack(tcpsock, ack);
                     _switch_state(tcpsock, ESTABLISHED);
-                    // TODO Do I need to update window here?
+                    // Check if we can safely fall through to ESTABLISHED
                 } else {
                     send_tcp_ctl_msg(tcpsock, FLAG_RST,
                                      tcpsock->SND.NXT, tcpsock->RCV.NXT, 0);
@@ -358,6 +356,9 @@ void _socket_receive(struct tcp_socket* tcpsock, uint32_t srcaddr_nw,
                                   tcpsock->RCV.WND - seg_seq);
             if (seg_len > max_len) {
                 seg_len = max_len;
+            }
+            if (!seg_len) {
+                break;
             }
             // TODO copy data into buffer and update RCV.WND accordingly
             printf("Got data: %.*s\n", seg_len, (char*) data_start);
