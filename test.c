@@ -32,7 +32,7 @@ int main(int argc __attribute__((__unused__)),
     struct sockaddr_in my_addr;
     my_addr.sin_family = AF_INET;
     my_addr.sin_port = htons(37624);
-    inet_aton("10.142.34.96", &my_addr.sin_addr);
+    inet_aton("192.168.1.107", &my_addr.sin_addr);
     memset(my_addr.sin_zero, 0, 8);
 
     struct sockaddr_in dest_addr;
@@ -44,6 +44,7 @@ int main(int argc __attribute__((__unused__)),
     tcp_init();
     sock = create_socket(&my_addr);
     active_open(sock, &dest_addr);
+
     while (1) {
         rv = select(0, NULL, NULL, NULL, NULL);
         if (rv == -1 || errno == EINTR) {

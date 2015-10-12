@@ -50,6 +50,9 @@ enum tcp_state { LISTEN, SYN_SENT, SYN_RECEIVED, ESTABLISHED, FIN_WAIT_1,
 struct tcp_socket {
     /* ID of this socket. */
     int index;
+
+    /* stores whether the connection was opened actively */
+    int activeopen;
     
     /* local and remote addresses */
     struct sockaddr_in local_addr;
@@ -74,6 +77,9 @@ struct tcp_socket {
 
     /* locks for retransimission buffer */
     pthread_mutex_t retrbuf_lock;
+
+    /* sequence number of FIN message sent by this side of the connection */
+    uint32_t finseqnum;
 
     /* Sequence Variables for Send, named to mirror RFC spec. */
     struct {

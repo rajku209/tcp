@@ -72,7 +72,7 @@ size_t _cbuf_used_space(struct circbuf_header* chdr) {
 /* There's always one byte of lost space so I can distinguish between a full
    buffer and an empty buffer. */
 size_t cbuf_free_space(struct circbuf_header* chdr) {
-    return chdr->size - 1 - cbuf_used_space(chdr);
+    return chdr->size - 1 - _cbuf_used_space(chdr);
 }
 
 int cbuf_write(uint8_t* buf, uint8_t* data, size_t data_len) {

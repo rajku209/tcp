@@ -76,6 +76,12 @@ void _switch_state(struct tcp_socket* tcpsock, enum tcp_state newstate) {
     tcpsock->state = newstate;
     switch (newstate) {
     case CLOSED:
+        // delete the TCB
+        tcpsock->activeopen = 0;
+        cbuf_init(tcpsock->sendbuf, SENDBUFLEN);
+        cbuf_init(tcpsock->recvbuf, RECVBUFLEN);
+        cbuf_init(tcpsock->retrbuf, RETRBUFLEN);
+        // fallthrough is intentional
     case FIN_WAIT_1:
     case FIN_WAIT_2:
         tcpsock->retriesactive = 0;
@@ -117,6 +123,12 @@ void _socket_receive(struct tcp_socket* tcpsock, struct tcp_header* tcphdr,
                      size_t len) {
     int got_ack;
     uint32_t ack;
+    uint8_t* data_start;
+    uint8_t header_len;
+    uint16_t seg_len, max_len;
+    uint32_t seg_seq;
+    uint32_t temp;
+    int accept_seg;
     printf("Segment arrives for socket %d!\n", tcpsock->index);
     switch (tcpsock->state) {
     case ESTABLISHED:
@@ -191,40 +203,204 @@ void _socket_receive(struct tcp_socket* tcpsock, struct tcp_header* tcphdr,
             }
         }
         break;
-    case SYN_RECEIVED:
-        if (tcphdr->flags == FLAG_ACK) {
-            send_tcp_ctl_msg(tcpsock, FLAG_ACK,
+    default:
+        header_len = (tcphdr->offset_reserved_NS >> 4) & (uint8_t) 0xFC;
+        seg_len = len - header_len;
+        seg_seq = ntohl(tcphdr->seqnum);
+        accept_seg = 0;
+
+        // I can probably simplify this logic
+        if (tcpsock->RCV.WND) {
+            accept_seg = (tcpsock->RCV.NXT <= seg_seq &&
+                          seg_seq < (tcpsock->RCV.NXT + tcpsock->RCV.WND));
+            if (seg_len) {
+                temp = seg_seq + seg_len - 1;
+                accept_seg = accept_seg || (tcpsock->RCV.NXT <= temp &&
+                                            temp < (tcpsock->RCV.NXT +
+                                                    tcpsock->RCV.WND));
+            }
+        } else if (seg_seq == tcpsock->RCV.NXT) {
+            // No segments are accepted, but valid ACKs, URGs, RSTs are
+            accept_seg = 1;
+        }
+
+        // I don't support Selective ACKs. So I just ignore these segments
+        if (seg_seq > tcpsock->RCV.NXT) {
+            printf("Causing confusion\n");
+            accept_seg = 0;
+        }
+        if (!accept_seg) {
+            if (!(tcphdr->flags & FLAG_RST)) {
+                printf("Suspect #2\n");
+                send_tcp_ctl_msg(tcpsock, FLAG_ACK,
+                                 tcpsock->SND.NXT, tcpsock->RCV.NXT, 0);
+            }
+            break;
+        }
+
+        if (tcphdr->flags & FLAG_RST) {
+            switch (tcpsock->state) {
+            case SYN_RECEIVED:
+                if (tcpsock->activeopen) {
+                    // clear retransmission queue
+                    cbuf_init(tcpsock->retrbuf, RETRBUFLEN);
+                    _switch_state(tcpsock, LISTEN);
+                } else {
+                    printf("Connection refused on socket %d\n", tcpsock->index);
+                    _switch_state(tcpsock, CLOSED);
+                }
+                break;
+            case ESTABLISHED:
+            case FIN_WAIT_1:
+            case FIN_WAIT_2:
+            case CLOSE_WAIT:
+                printf("Connection reset on socket %d\n", tcpsock->index);
+                // fallthrough is intentional
+            default: // CLOSING, LAST_ACK, TIME_WAIT
+                _switch_state(tcpsock, CLOSED);
+                break;
+            }
+            break; // done processing, no matter what state the socket was in
+        }
+
+        // TODO check security and precedence
+
+        if (tcphdr->flags & FLAG_SYN) {
+            // Panic and terminate connection
+            printf("Connection terminated on socket %d: unexpected SYN\n",
+                   tcpsock->index);
+            send_tcp_ctl_msg(tcpsock, FLAG_RST,
                              tcpsock->SND.NXT, tcpsock->RCV.NXT, 0);
-            _switch_state(tcpsock, ESTABLISHED);
-        }
-        break;
-    case FIN_WAIT_1:
-        if (tcphdr->flags == FLAG_ACK) {
-            _switch_state(tcpsock, FIN_WAIT_2);
-        } else if (tcphdr->flags == FLAG_FIN) {
-            send_tcp_ctl_msg(tcpsock, FLAG_ACK,
-                             tcpsock->SND.NXT, tcpsock->RCV.NXT, 0);
-            _switch_state(tcpsock, CLOSING);
-        }
-        break;
-    case FIN_WAIT_2:
-        if (tcphdr->flags == FLAG_FIN) {
-            send_tcp_ctl_msg(tcpsock, FLAG_ACK,
-                             tcpsock->SND.NXT, tcpsock->RCV.NXT, 0);
-            _switch_state(tcpsock, TIME_WAIT);
-        }
-        break;
-    case CLOSING:
-        if (tcphdr->flags == FLAG_ACK) {
-            _switch_state(tcpsock, TIME_WAIT);
-        }
-        break;
-    case LAST_ACK:
-        if (tcphdr->flags == FLAG_ACK) {
             _switch_state(tcpsock, CLOSED);
+            break;
         }
+
+        if (tcphdr->flags & FLAG_ACK) {
+            ack = ntohl(tcphdr->acknum);
+            switch(tcpsock->state) {
+            case SYN_RECEIVED:
+                if (ack >= tcpsock->SND.UNA && ack <= tcpsock->SND.NXT) {
+                    _switch_state(tcpsock, ESTABLISHED);
+                } else {
+                    send_tcp_ctl_msg(tcpsock, FLAG_RST,
+                                     tcpsock->SND.NXT, tcpsock->RCV.NXT, 0);
+                    // stop processing here?
+                }
+                break;
+            case CLOSE_WAIT:
+            case FIN_WAIT_1:
+            case FIN_WAIT_2:
+            case CLOSING:
+            case ESTABLISHED:
+                if (ack > tcpsock->SND.UNA && ack <= tcpsock->SND.NXT) {
+                    tcpsock->SND.UNA = ack;
+                    _process_ack(tcpsock, ack);
+                    // Update the window if more recent than last update
+                    if (seg_seq > tcpsock->SND.WL1 ||
+                        (seg_seq == tcpsock->SND.WL1 &&
+                         ack >= tcpsock->SND.WL2)) {
+                        tcpsock->SND.WND = ntohs(tcphdr->winsize);
+                        tcpsock->SND.WL1 = seg_seq;
+                        tcpsock->SND.WL2 = ack;
+                    }
+                } else if (ack > tcpsock->SND.NXT) {
+                    printf("Sending suspect ACK\n");
+                    send_tcp_ctl_msg(tcpsock, FLAG_ACK, tcpsock->SND.NXT,
+                                     ntohl(tcphdr->seqnum), 0);
+                    // stop processing and return
+                    /* What I really want to do is break the outer switch, but
+                       it seems that C doesn't support that directly. */
+                    goto dropsegment;
+                }
+                if (tcpsock->state == FIN_WAIT_1 &&
+                    tcpsock->SND.UNA > tcpsock->finseqnum) {
+                    if (tcphdr->flags & FLAG_FIN) {
+                        _switch_state(tcpsock, TIME_WAIT);
+                    } else {
+                        _switch_state(tcpsock, FIN_WAIT_2);
+                    }
+                } else if (tcpsock->state == CLOSING &&
+                    tcpsock->SND.UNA > tcpsock->finseqnum) {
+                    _switch_state(tcpsock, TIME_WAIT);
+                }
+                break;
+            case LAST_ACK:
+                if (ack > tcpsock->finseqnum) {
+                    _switch_state(tcpsock, TIME_WAIT);
+                }
+                break;
+            case TIME_WAIT:
+                if (tcphdr->flags & FLAG_FIN) {
+                    send_tcp_ctl_msg(tcpsock, FLAG_ACK,
+                                     tcpsock->SND.NXT, seg_seq, 0);
+                }
+                _switch_state(tcpsock, TIME_WAIT); // restart the timer
+                break;
+            default: // CLOSED, LISTEN, or SYN_SENT
+                printf("Should never get here: socket %d\n", tcpsock->index);
+                break;
+            }
+        } else {
+            break; // drop segment and return
+        }
+
+        // TODO check URG
+
+        // Process the actual data received
+        switch (tcpsock->state) {
+        case ESTABLISHED:
+        case FIN_WAIT_1:
+        case FIN_WAIT_2:
+            // Trim segment to correct length
+            data_start = ((uint8_t*) tcphdr) + header_len +
+                tcpsock->RCV.NXT - seg_seq;
+            max_len = (uint16_t) (tcpsock->RCV.NXT +
+                                  tcpsock->RCV.WND - seg_seq);
+            if (seg_len > max_len) {
+                seg_len = max_len;
+            }
+            // TODO copy data into buffer and update RCV.WND accordingly
+            printf("Got data: %.*s\n", seg_len, (char*) data_start);
+            tcpsock->RCV.NXT += seg_len;
+            // TODO combine this ack with another outgoing segment if possible
+            send_tcp_ctl_msg(tcpsock, FLAG_ACK,
+                             tcpsock->SND.NXT, tcpsock->RCV.NXT, 0);
+            break;
+        default:
+            break;
+        }
+
+        if (tcphdr->flags & FLAG_FIN) {
+            printf("Connection closing\n");
+            tcpsock->RCV.NXT = seg_seq + 1;
+            send_tcp_ctl_msg(tcpsock, FLAG_ACK,
+                             tcpsock->SND.NXT, tcpsock->RCV.NXT, 0);
+            switch (tcpsock->state) {
+            case SYN_RECEIVED:
+            case ESTABLISHED:
+                _switch_state(tcpsock, CLOSE_WAIT);
+                break;
+            case FIN_WAIT_1:
+                // FIN-ACK case was already handled above
+                _switch_state(tcpsock, CLOSING);
+                break;
+            case FIN_WAIT_2:
+            case TIME_WAIT: // restart timer in this case
+                _switch_state(tcpsock, TIME_WAIT);
+                break;
+            case CLOSE_WAIT:
+            case CLOSING:
+            case LAST_ACK:
+                break;
+            default: // CLOSED, LISTEN, or SYN_SENT
+                printf("Should never get here: socket %d\n", tcpsock->index);
+                break;
+            }
+        }
+        
         break;
     }
+    dropsegment:
     _set_timer();
 }
 
@@ -347,6 +523,8 @@ void active_open(struct tcp_socket* tcpsock, struct sockaddr_in* dest) {
     if (dest->sin_addr.s_addr == LOCALHOST) {
         *((uint32_t*) &tcpsock->local_addr.sin_addr) = LOCALHOST;
     }
+
+    tcpsock->activeopen = 1;
     
     /* Initiate the TCP handshake */
     send_tcp_ctl_msg(tcpsock, FLAG_SYN, tcpsock->ISS, 0, 1);
@@ -366,6 +544,7 @@ struct tcp_socket* create_socket(struct sockaddr_in* bindto) {
     }
     struct tcp_socket* tcpsock = malloc(sizeof(struct tcp_socket));
     tcpsock->index = next_index;
+    tcpsock->activeopen = 0;
     tcpsock->local_addr = *bindto;
     /* For safety. You can remove this memset. */
     memset(&tcpsock->remote_addr, 0, sizeof(struct sockaddr_in));
@@ -401,8 +580,12 @@ struct tcp_socket* create_socket(struct sockaddr_in* bindto) {
 
 void close_socket(struct tcp_socket* tcpsock) {
     /* TODO Currently, I just send the FIN immediately.
-       I need to revise this to put FIN on the current segment queue. */
+       I need to wait for send buffer to empty first. */
     switch(tcpsock->state) {
+    case CLOSED:
+        printf("Attempted to close non-existent connection: socket %d\n",
+               tcpsock->index);
+        break;
     case LISTEN:
     case SYN_SENT:
         _switch_state(tcpsock, CLOSED);
@@ -410,16 +593,22 @@ void close_socket(struct tcp_socket* tcpsock) {
     case SYN_RECEIVED:
     case ESTABLISHED:
         _switch_state(tcpsock, FIN_WAIT_1);
-        send_tcp_ctl_msg(tcpsock, FLAG_FIN,
+        // Maybe I should set finseqnum in send_tcp_ctl_msg?
+        tcpsock->finseqnum = tcpsock->SND.NXT;
+        send_tcp_ctl_msg(tcpsock, FLAG_FIN | FLAG_ACK,
                          tcpsock->SND.NXT, tcpsock->RCV.NXT, 1);
+        tcpsock->SND.NXT++;
         break;
     case CLOSE_WAIT:
         _switch_state(tcpsock, LAST_ACK);
-        send_tcp_ctl_msg(tcpsock, FLAG_FIN,
+        tcpsock->finseqnum = tcpsock->SND.NXT;
+        send_tcp_ctl_msg(tcpsock, FLAG_FIN | FLAG_ACK,
                          tcpsock->SND.NXT, tcpsock->RCV.NXT, 1);
+        tcpsock->SND.NXT++;
         break;
     default:
-        printf("Attempted to close socket in invalid state\n");
+        printf("Attempted to close socket %d in invalid state\n",
+               tcpsock->index);
         break;
     }
     _set_timer();
