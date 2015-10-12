@@ -25,12 +25,12 @@ void shutdown_socket(int unused __attribute__((__unused__))) {
 
 int main(int argc __attribute__((__unused__)),
          char** argv __attribute__((__unused__))) {
-    //signal(SIGINT, &shutdown_socket);
+    signal(SIGINT, &shutdown_socket);
     
     struct sockaddr_in my_addr;
     my_addr.sin_family = AF_INET;
     my_addr.sin_port = htons(37624);
-    inet_aton("192.168.1.107", &my_addr.sin_addr);
+    inet_aton("127.0.0.1", &my_addr.sin_addr);
     memset(my_addr.sin_zero, 0, 8);
 
     struct sockaddr_in dest_addr;
@@ -41,7 +41,7 @@ int main(int argc __attribute__((__unused__)),
     
     tcp_init();
     sock = create_socket(&my_addr);
-    active_open(sock);
+    passive_open(sock);
 
     int buf_size = 1024 * sizeof(char);
     char* buf = malloc(buf_size);

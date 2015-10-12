@@ -86,6 +86,9 @@ void _switch_state(struct tcp_socket* tcpsock, enum tcp_state newstate) {
     case FIN_WAIT_2:
         tcpsock->retriesactive = 0;
         break;
+    case LISTEN:
+        tcpsock->activeopen = 0;
+        // fallthrough is intentional
     default:
         if (newstate == TIME_WAIT) {
             delay_to_abs(&tcpsock->nextretry, &WAIT_TIME);
@@ -110,7 +113,7 @@ void _process_ack(struct tcp_socket* tcpsock, uint32_t ack) {
     while ((segsize = cbuf_peek_segment_size(tcpsock->retrbuf))) {
         cbuf_peek_segment(tcpsock->retrbuf,
                           (uint8_t*) &retrhdr, sizeof(retrhdr));
-        if (ntohl(retrhdr.acknum) < ack) {
+        if (ntohl(retrhdr.seqnum) < ack) {
             cbuf_pop_segment(tcpsock->retrbuf, segsize);
         } else {
             break;
@@ -119,8 +122,8 @@ void _process_ack(struct tcp_socket* tcpsock, uint32_t ack) {
     pthread_mutex_unlock(&tcpsock->retrbuf_lock);
 }
 
-void _socket_receive(struct tcp_socket* tcpsock, struct tcp_header* tcphdr,
-                     size_t len) {
+void _socket_receive(struct tcp_socket* tcpsock, uint32_t srcaddr_nw,
+                     struct tcp_header* tcphdr, size_t len) {
     int got_ack;
     uint32_t ack;
     uint8_t* data_start;
@@ -150,6 +153,8 @@ void _socket_receive(struct tcp_socket* tcpsock, struct tcp_header* tcphdr,
             // TODO check for security/compartment, and precedence
             tcpsock->IRS = ntohl(tcphdr->seqnum);
             tcpsock->RCV.NXT = tcpsock->IRS + 1;
+            tcpsock->remote_addr.sin_addr.s_addr = srcaddr_nw;
+            tcpsock->remote_addr.sin_port = tcphdr->srcport;
             _switch_state(tcpsock, SYN_RECEIVED);
             send_tcp_ctl_msg(tcpsock, FLAG_SYN | FLAG_ACK,
                              tcpsock->ISS, tcpsock->RCV.NXT, 1);
@@ -273,13 +278,16 @@ void _socket_receive(struct tcp_socket* tcpsock, struct tcp_header* tcphdr,
             switch(tcpsock->state) {
             case SYN_RECEIVED:
                 if (ack >= tcpsock->SND.UNA && ack <= tcpsock->SND.NXT) {
+                    tcpsock->SND.UNA = ack;
+                    _process_ack(tcpsock, ack);
                     _switch_state(tcpsock, ESTABLISHED);
+                    // TODO Do I need to update window here?
                 } else {
                     send_tcp_ctl_msg(tcpsock, FLAG_RST,
                                      tcpsock->SND.NXT, tcpsock->RCV.NXT, 0);
-                    // stop processing here?
+                    goto dropsegment;
                 }
-                break;
+                // fallthrough is intentional
             case CLOSE_WAIT:
             case FIN_WAIT_1:
             case FIN_WAIT_2:
@@ -297,7 +305,6 @@ void _socket_receive(struct tcp_socket* tcpsock, struct tcp_header* tcphdr,
                         tcpsock->SND.WL2 = ack;
                     }
                 } else if (ack > tcpsock->SND.NXT) {
-                    printf("Sending suspect ACK\n");
                     send_tcp_ctl_msg(tcpsock, FLAG_ACK, tcpsock->SND.NXT,
                                      ntohl(tcphdr->seqnum), 0);
                     // stop processing and return
@@ -405,10 +412,11 @@ void _dispatch_packet(struct tcp_header* tcphdr, size_t packet_len,
         if (sockets[i]) {
             curr = sockets[i];
             if (curr->local_addr.sin_addr.s_addr == destaddr_nw &&
-                curr->remote_addr.sin_addr.s_addr == srcaddr_nw &&
                 curr->local_addr.sin_port == tcphdr->destport &&
-                curr->remote_addr.sin_port == tcphdr->srcport) {
-                _socket_receive(curr, tcphdr, packet_len);
+                (curr->state == CLOSED || curr->state == LISTEN ||
+                 (curr->remote_addr.sin_addr.s_addr == srcaddr_nw &&
+                  curr->remote_addr.sin_port == tcphdr->srcport))) {
+                _socket_receive(curr, srcaddr_nw, tcphdr, packet_len);
                 break;
             }
         }
