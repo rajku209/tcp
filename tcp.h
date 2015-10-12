@@ -108,8 +108,9 @@ struct tcp_socket {
 int tcp_init(void);
 void init_header(struct tcp_header*);
 struct tcp_socket* create_socket(struct sockaddr_in*);
+void passive_open(struct tcp_socket* socket);
 void active_open(struct tcp_socket* socket, struct sockaddr_in* dest);
-void close_socket(struct tcp_socket*);
+void close_connection(struct tcp_socket*);
 void destroy_socket(struct tcp_socket*);
 
 #endif

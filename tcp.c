@@ -511,18 +511,48 @@ int tcp_init() {
     return 0;
 }
 
-void active_open(struct tcp_socket* tcpsock, struct sockaddr_in* dest) {
-    tcpsock->remote_addr = *dest;
-    if (dest->sin_addr.s_addr == LOCALHOST) {
-        *((uint32_t*) &tcpsock->local_addr.sin_addr) = LOCALHOST;
-    }
-
-    tcpsock->activeopen = 1;
+void passive_open(struct tcp_socket* tcpsock) {
+    if (tcpsock->state == CLOSED) {
+        _switch_state(tcpsock, LISTEN);
     
-    /* Initiate the TCP handshake */
-    send_tcp_ctl_msg(tcpsock, FLAG_SYN, tcpsock->ISS, 0, 1);
-    _switch_state(tcpsock, SYN_SENT);
-    _set_timer();
+        /* Some initialization to reset the connection. */
+        tcpsock->ISS = 0x012faded; // TODO randomly generate this
+        tcpsock->SND.UNA = tcpsock->ISS;
+        tcpsock->SND.NXT = tcpsock->ISS + 1;
+        tcpsock->RCV.WND = cbuf_free_space(tcpsock->recvbuf);
+        
+        /* I don't need to initialize these fields, but I set them anyway. */
+        tcpsock->SND.WND = 0xFFFF;
+        tcpsock->SND.WL1 = 0xFFFFFFFF;
+        tcpsock->SND.WL2 = 0xFFFFFFFF;
+        tcpsock->RCV.NXT = 0xFFFFFFFF;
+        tcpsock->RCV.UP = 0xFFFF;
+        tcpsock->IRS = 0xFFFFFFFF;
+    } else if (tcpsock->state != LISTEN) {
+        printf("Passive open fails for socket %d: connection exists\n",
+               tcpsock->index);
+    }
+}
+
+void active_open(struct tcp_socket* tcpsock, struct sockaddr_in* dest) {
+    if (tcpsock->state == CLOSED) {
+        passive_open(tcpsock);
+    }
+    if (tcpsock->state == LISTEN) {
+        tcpsock->remote_addr = *dest;
+        if (dest->sin_addr.s_addr == LOCALHOST) {
+            *((uint32_t*) &tcpsock->local_addr.sin_addr) = LOCALHOST;
+        }
+        
+        tcpsock->activeopen = 1;
+        
+        /* Initiate the TCP handshake */
+        send_tcp_ctl_msg(tcpsock, FLAG_SYN, tcpsock->ISS, 0, 1);
+        _switch_state(tcpsock, SYN_SENT);
+    } else {
+        printf("Active open fails for socket %d: connection exists\n",
+               tcpsock->index);
+    }
 }
 
 /* Creates and binds a TCP socket. */
@@ -539,39 +569,19 @@ struct tcp_socket* create_socket(struct sockaddr_in* bindto) {
     tcpsock->index = next_index;
     tcpsock->activeopen = 0;
     tcpsock->local_addr = *bindto;
+    _switch_state(tcpsock, CLOSED);
     /* For safety. You can remove this memset. */
     memset(&tcpsock->remote_addr, 0, sizeof(struct sockaddr_in));
-    tcpsock->state = CLOSED;
-    tcpsock->retriesactive = 0;
     memset(&tcpsock->nextretry, 0, sizeof(tcpsock->nextretry));
-    tcpsock->numretries = 0;
-    cbuf_init(tcpsock->sendbuf, SENDBUFLEN);
-    cbuf_init(tcpsock->recvbuf, RECVBUFLEN);
-    cbuf_init(tcpsock->retrbuf, RETRBUFLEN);
     if (pthread_mutex_init(&tcpsock->retrbuf_lock, NULL)) {
         printf("Could not initialize retransmission buffer lock\n");
     }
 
-    /* Some initialization to reset the connection. */
-    tcpsock->ISS = 0x012faded; // TODO randomly generate this
-    tcpsock->SND.UNA = tcpsock->ISS;
-    tcpsock->SND.NXT = tcpsock->ISS + 1;
-    tcpsock->RCV.WND = cbuf_free_space(tcpsock->recvbuf);
-    
-    /* I don't need to initialize these fields, but I set them anyway. */
-    tcpsock->SND.WND = 0xFFFF;
-    tcpsock->SND.WL1 = 0xFFFFFFFF;
-    tcpsock->SND.WL2 = 0xFFFFFFFF;
-    tcpsock->RCV.NXT = 0xFFFFFFFF;
-    tcpsock->RCV.UP = 0xFFFF;
-    tcpsock->IRS = 0xFFFFFFFF;
-    
-    
     sockets[next_index] = tcpsock;
     return tcpsock;
 }
 
-void close_socket(struct tcp_socket* tcpsock) {
+void close_connection(struct tcp_socket* tcpsock) {
     /* TODO Currently, I just send the FIN immediately.
        I need to wait for send buffer to empty first. */
     switch(tcpsock->state) {
@@ -617,7 +627,7 @@ void tcp_halt() {
     int i;
     for (i = 0; i < MAXSOCKETS; i++) {
         if (sockets[i]) {
-            close_socket(sockets[i]);
+            destroy_socket(sockets[i]);
         }
     }
     halt_tcp_rw();

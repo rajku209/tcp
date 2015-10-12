@@ -16,7 +16,7 @@ struct tcp_socket* sock = NULL;
 void shutdown_socket(int unused __attribute__((__unused__))) {
     if (sock) {
         printf("Closing connection gracefully...\n");
-        close_socket(sock);
+        close_connection(sock);
         sleep(3);
         destroy_socket(sock);
         exit(0);
@@ -25,9 +25,7 @@ void shutdown_socket(int unused __attribute__((__unused__))) {
 
 int main(int argc __attribute__((__unused__)),
          char** argv __attribute__((__unused__))) {
-    int rv;
-
-    signal(SIGINT, &shutdown_socket);
+    //signal(SIGINT, &shutdown_socket);
     
     struct sockaddr_in my_addr;
     my_addr.sin_family = AF_INET;
@@ -43,16 +41,18 @@ int main(int argc __attribute__((__unused__)),
     
     tcp_init();
     sock = create_socket(&my_addr);
-    active_open(sock, &dest_addr);
+    active_open(sock);
 
-    while (1) {
-        rv = select(0, NULL, NULL, NULL, NULL);
-        if (rv == -1 || errno == EINTR) {
-            continue;
-        } else {
-            fprintf(stderr, "main select loop returned\n");
-            break;
-        }
+    int buf_size = 1024 * sizeof(char);
+    char* buf = malloc(buf_size);
+    char* result;
+    // assignment in predicate is intentional
+    while ((result = fgets(buf, buf_size, stdin))) {
+        printf("Input: %s\n", buf);
     }
+    free(buf);
+
+    signal(SIGINT, SIG_IGN);
+    shutdown_socket(0);
     return 0;
 }
