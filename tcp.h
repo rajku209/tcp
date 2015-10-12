@@ -23,6 +23,7 @@
 #define MAX_TRIES 5
 
 #define SENDBUFLEN 256
+#define RECVBUFLEN 256
 #define RETRBUFLEN 256
 
 /*
@@ -66,8 +67,9 @@ struct tcp_socket {
     /* number of retries */
     uint32_t numretries;
 
-    /* send and retransmission buffers */
+    /* send, receive, and retransmission buffers */
     uint8_t sendbuf[SENDBUFLEN];
+    uint8_t recvbuf[RECVBUFLEN];
     uint8_t retrbuf[RETRBUFLEN];
 
     /* locks for retransimission buffer */
@@ -84,7 +86,11 @@ struct tcp_socket {
     } SND;
     uint32_t ISS; // Initial send sequence number
     
-    /* Sequence Variables for Receive, named to mirror RFC spec. */
+    /* Sequence Variables for Receive, named to mirror RFC spec.
+       I could just recompute the receive window every time by checking the
+       amount of free space in the receive buffer, but I thought that this
+       would make the code more readable. I will be careful to update WND
+       whenever I read from or write to the buffer. */
     struct {
         uint32_t NXT; // Receive next;
         uint16_t WND; // Receive window

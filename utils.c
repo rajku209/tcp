@@ -71,13 +71,13 @@ size_t _cbuf_used_space(struct circbuf_header* chdr) {
 
 /* There's always one byte of lost space so I can distinguish between a full
    buffer and an empty buffer. */
-size_t _cbuf_free_space(struct circbuf_header* chdr) {
-    return chdr->size - 1 - _cbuf_used_space(chdr);
+size_t cbuf_free_space(struct circbuf_header* chdr) {
+    return chdr->size - 1 - cbuf_used_space(chdr);
 }
 
 int cbuf_write(uint8_t* buf, uint8_t* data, size_t data_len) {
     struct circbuf_header* chdr = (struct circbuf_header*) buf;
-    if (_cbuf_free_space(chdr) < data_len) {
+    if (cbuf_free_space(chdr) < data_len) {
         return -1;
     }
     uint8_t* buf_data = (uint8_t*) (chdr + 1);
@@ -149,7 +149,7 @@ size_t cbuf_pop(uint8_t* buf, size_t numbytes) {
 
 int cbuf_write_segment(uint8_t* buf, uint8_t* segment, size_t seglen) {
     struct circbuf_header* chdr = (struct circbuf_header*) buf;
-    if (_cbuf_free_space(chdr) < seglen + sizeof(seglen)) {
+    if (cbuf_free_space(chdr) < seglen + sizeof(seglen)) {
         return -1;
     }
     cbuf_write(buf, (uint8_t*) &seglen, sizeof(seglen));

@@ -374,6 +374,7 @@ struct tcp_socket* create_socket(struct sockaddr_in* bindto) {
     memset(&tcpsock->nextretry, 0, sizeof(tcpsock->nextretry));
     tcpsock->numretries = 0;
     cbuf_init(tcpsock->sendbuf, SENDBUFLEN);
+    cbuf_init(tcpsock->recvbuf, RECVBUFLEN);
     cbuf_init(tcpsock->retrbuf, RETRBUFLEN);
     if (pthread_mutex_init(&tcpsock->retrbuf_lock, NULL)) {
         printf("Could not initialize retransmission buffer lock\n");
@@ -383,12 +384,13 @@ struct tcp_socket* create_socket(struct sockaddr_in* bindto) {
     tcpsock->ISS = 0x012faded; // TODO randomly generate this
     tcpsock->SND.UNA = tcpsock->ISS;
     tcpsock->SND.NXT = tcpsock->ISS + 1;
-    tcpsock->SND.WND = 1024;
+    tcpsock->RCV.WND = cbuf_free_space(tcpsock->recvbuf);
+    
     /* I don't need to initialize these fields, but I set them anyway. */
+    tcpsock->SND.WND = 0xFFFF;
     tcpsock->SND.WL1 = 0xFFFFFFFF;
     tcpsock->SND.WL2 = 0xFFFFFFFF;
     tcpsock->RCV.NXT = 0xFFFFFFFF;
-    tcpsock->RCV.WND = 0xFFFF;
     tcpsock->RCV.UP = 0xFFFF;
     tcpsock->IRS = 0xFFFFFFFF;
     

@@ -109,14 +109,14 @@ void send_tcp_msg(struct tcp_socket* tcpsock, uint8_t flags,
     printf("Sending\n");
     tcpseg->seqnum = htonl(seqnum);
     tcpseg->acknum = htonl(acknum);
-    tcpseg->winsize = htons(tcpsock->SND.WND);
+    tcpseg->winsize = htons(tcpsock->RCV.WND);
     tcpseg->urgentptr = htons(tcpsock->SND.UP);
     tcpseg->flags = flags;
     tcpseg->offset_reserved_NS = 0; // for now, no offset
     /* Set the relevant fields of the TCP header. */
     tcpseg->srcport = tcpsock->local_addr.sin_port;
     tcpseg->destport = tcpsock->remote_addr.sin_port;
-    tcpseg->offset_reserved_NS |= (((uint8_t) len) << 2);
+    tcpseg->offset_reserved_NS |= (((uint8_t) sizeof(struct tcp_header)) << 2);
     tcpseg->urgentptr = 0; // I never send out urgent messages
     tcpseg->checksum = 0;
     cksum = get_checksum(&tcpsock->local_addr.sin_addr,
