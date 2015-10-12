@@ -131,11 +131,6 @@ void _socket_receive(struct tcp_socket* tcpsock, struct tcp_header* tcphdr,
     int accept_seg;
     printf("Segment arrives for socket %d!\n", tcpsock->index);
     switch (tcpsock->state) {
-    case ESTABLISHED:
-        printf("Receipt in ESTABLISHED state is not yet implemented\n");
-        break;
-    case CLOSE_WAIT:
-    case TIME_WAIT:
     case CLOSED:
         if (tcphdr->flags & FLAG_RST) {
             break;
@@ -204,7 +199,7 @@ void _socket_receive(struct tcp_socket* tcpsock, struct tcp_header* tcphdr,
         }
         break;
     default:
-        header_len = (tcphdr->offset_reserved_NS >> 4) & (uint8_t) 0xFC;
+        header_len = (tcphdr->offset_reserved_NS >> 2) & (uint8_t) 0xFC;
         seg_len = len - header_len;
         seg_seq = ntohl(tcphdr->seqnum);
         accept_seg = 0;
@@ -226,12 +221,10 @@ void _socket_receive(struct tcp_socket* tcpsock, struct tcp_header* tcphdr,
 
         // I don't support Selective ACKs. So I just ignore these segments
         if (seg_seq > tcpsock->RCV.NXT) {
-            printf("Causing confusion\n");
             accept_seg = 0;
         }
         if (!accept_seg) {
             if (!(tcphdr->flags & FLAG_RST)) {
-                printf("Suspect #2\n");
                 send_tcp_ctl_msg(tcpsock, FLAG_ACK,
                                  tcpsock->SND.NXT, tcpsock->RCV.NXT, 0);
             }
