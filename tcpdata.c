@@ -68,7 +68,7 @@ void* socket_read_loop(void* unused __attribute__((__unused__))) {
             get_checksum((struct in_addr*) &srcaddr_nw,
                          (struct in_addr*) &destaddr_nw,
                          tcphdr, msg_len - iphdr_len)) {
-            printf("Incorrect TCP checksum, dropping packet\n");
+            // Incorrect checksum, drop packet
             continue;
         }
         
@@ -106,7 +106,6 @@ void send_tcp_msg(struct tcp_socket* tcpsock, uint8_t flags,
     if (msgbody_len) {
         memcpy(tcpseg + 1, msgbody, msgbody_len);
     }
-    printf("Sending\n");
     tcpseg->seqnum = htonl(seqnum);
     tcpseg->acknum = htonl(acknum);
     tcpseg->winsize = htons(tcpsock->RCV.WND);

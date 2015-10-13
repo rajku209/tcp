@@ -75,9 +75,13 @@ struct tcp_socket {
     uint8_t recvbuf[RECVBUFLEN];
     uint8_t retrbuf[RETRBUFLEN];
 
-    /* lock for sending data */
+    /* locks for sending data and receiving data */
     pthread_mutex_t send_lock;
+    pthread_mutex_t recv_lock;
 
+    /* monitor so the user knows when data is ready to be read */
+    pthread_cond_t dataready;
+    
     /* sequence number of FIN message sent by this side of the connection */
     uint32_t finseqnum;
 
@@ -111,6 +115,8 @@ struct tcp_socket* create_socket(struct sockaddr_in*);
 void passive_open(struct tcp_socket* socket);
 void active_open(struct tcp_socket* socket, struct sockaddr_in* dest);
 size_t send_data(struct tcp_socket* socket, uint8_t* data, size_t len);
+size_t read_nonblocking(struct tcp_socket* socket, uint8_t* data, size_t len);
+size_t read_blocking(struct tcp_socket* socket, uint8_t* data, size_t len);
 void close_connection(struct tcp_socket*);
 void destroy_socket(struct tcp_socket*);
 

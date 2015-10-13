@@ -154,7 +154,6 @@ void _socket_receive(struct tcp_socket* tcpsock, uint32_t srcaddr_nw,
     uint32_t temp;
     int accept_seg;
     pthread_mutex_lock(&tcpsock->send_lock);
-    printf("Segment arrives for socket %d!\n", tcpsock->index);
     switch (tcpsock->state) {
     case CLOSED:
         if (tcphdr->flags & FLAG_RST) {
@@ -387,8 +386,13 @@ void _socket_receive(struct tcp_socket* tcpsock, uint32_t srcaddr_nw,
             if (!seg_len) {
                 break;
             }
-            // TODO copy data into buffer and update RCV.WND accordingly
-            printf("Got data: %.*s\n", seg_len, (char*) data_start);
+            pthread_mutex_lock(&tcpsock->recv_lock);
+            seg_len = (uint16_t) cbuf_write(tcpsock->recvbuf,
+                                            data_start, seg_len);
+            tcpsock->RCV.WND = cbuf_free_space(tcpsock->recvbuf);
+            // Inform a blocking thread that data was received
+            pthread_cond_signal(&tcpsock->dataready);
+            pthread_mutex_unlock(&tcpsock->recv_lock);
             tcpsock->RCV.NXT += seg_len;
             // TODO combine this ack with another outgoing segment if possible
             send_tcp_ctl_msg(tcpsock, FLAG_ACK,
@@ -613,6 +617,12 @@ struct tcp_socket* create_socket(struct sockaddr_in* bindto) {
     if (pthread_mutex_init(&tcpsock->send_lock, NULL)) {
         printf("Could not initialize the send lock\n");
     }
+    if (pthread_mutex_init(&tcpsock->recv_lock, NULL)) {
+        printf("Could not initialize the receive lock\n");
+    }
+    if (pthread_cond_init(&tcpsock->dataready, NULL)) {
+        printf("Could not initialize the dataready condition variable\n");
+    }
 
     sockets[next_index] = tcpsock;
     return tcpsock;
@@ -648,6 +658,36 @@ size_t send_data(struct tcp_socket* tcpsock, uint8_t* data, size_t len) {
         printf("Send fails on socket %d: connection closing\n", tcpsock->index);
         return 0;
     }
+}
+
+/* Returns how many bytes were actually read. */
+size_t read_nonblocking(struct tcp_socket* tcpsock, uint8_t* data, size_t len) {
+    size_t read;
+    pthread_mutex_lock(&tcpsock->recv_lock);
+    read = cbuf_read(tcpsock->recvbuf, data, len, 1);
+    pthread_mutex_unlock(&tcpsock->recv_lock);
+    return read;
+}
+
+size_t read_blocking(struct tcp_socket* tcpsock, uint8_t* data, size_t len) {
+    size_t read = 0;
+    pthread_mutex_lock(&tcpsock->recv_lock);
+    while (!read) {
+        pthread_cond_wait(&tcpsock->dataready, &tcpsock->recv_lock);
+        if (sockets[tcpsock->index] != tcpsock) { // socket is being destroyed
+            read = 0;
+            printf("Blocking read on socket %d stopped: socket destroyed\n",
+                   tcpsock->index);
+            break;
+        }
+        read = cbuf_read(tcpsock->recvbuf, data, len, 1);
+    }
+    // There might be data for some other thread waiting on this
+    if (read && cbuf_used_space(tcpsock->recvbuf)) {
+        pthread_cond_signal(&tcpsock->dataready);
+    }
+    pthread_mutex_unlock(&tcpsock->recv_lock);
+    return read;
 }
 
 void close_connection(struct tcp_socket* tcpsock) {
@@ -688,7 +728,12 @@ void close_connection(struct tcp_socket* tcpsock) {
 
 void destroy_socket(struct tcp_socket* tcpsock) {
     sockets[tcpsock->index] = NULL;
+    pthread_mutex_lock(&tcpsock->recv_lock);
+    pthread_cond_broadcast(&tcpsock->dataready);
+    pthread_mutex_unlock(&tcpsock->recv_lock);
     pthread_mutex_destroy(&tcpsock->send_lock);
+    pthread_mutex_destroy(&tcpsock->recv_lock);
+    pthread_cond_destroy(&tcpsock->dataready);
     free(tcpsock);
 }
 
