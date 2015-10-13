@@ -61,7 +61,7 @@ int cbuf_init(uint8_t* buf, size_t len) {
     return 0;
 }
 
-size_t _cbuf_used_space(struct circbuf_header* chdr) {
+size_t cbuf_used_space(struct circbuf_header* chdr) {
     if (chdr->w_index >= chdr->r_index) {
         return chdr->w_index - chdr->r_index;
     } else {
@@ -72,13 +72,14 @@ size_t _cbuf_used_space(struct circbuf_header* chdr) {
 /* There's always one byte of lost space so I can distinguish between a full
    buffer and an empty buffer. */
 size_t cbuf_free_space(struct circbuf_header* chdr) {
-    return chdr->size - 1 - _cbuf_used_space(chdr);
+    return chdr->size - 1 - cbuf_used_space(chdr);
 }
 
-int cbuf_write(uint8_t* buf, uint8_t* data, size_t data_len) {
+size_t cbuf_write(uint8_t* buf, uint8_t* data, size_t data_len) {
     struct circbuf_header* chdr = (struct circbuf_header*) buf;
-    if (cbuf_free_space(chdr) < data_len) {
-        return -1;
+    size_t free_space = cbuf_free_space(chdr);
+    if (free_space < data_len) {
+        data_len = free_space;
     }
     uint8_t* buf_data = (uint8_t*) (chdr + 1);
     size_t fw_index = (chdr->w_index + data_len) % chdr->size;
@@ -91,7 +92,7 @@ int cbuf_write(uint8_t* buf, uint8_t* data, size_t data_len) {
         memcpy(buf_data, data + bytes_to_end, data_len - bytes_to_end);
     }
     chdr->w_index = fw_index;
-    return 0;
+    return data_len;
 }
 
 void _cbuf_read_unsafe(struct circbuf_header* chdr, uint8_t* data,
@@ -113,7 +114,7 @@ void _cbuf_read_unsafe(struct circbuf_header* chdr, uint8_t* data,
 
 size_t cbuf_read(uint8_t* buf, uint8_t* data, size_t numbytes, int pop) {
     struct circbuf_header* chdr = (struct circbuf_header*) buf;
-    size_t used_space = _cbuf_used_space(chdr);
+    size_t used_space = cbuf_used_space(chdr);
     if (used_space < numbytes) {
         numbytes = used_space;
     }
@@ -126,7 +127,7 @@ size_t cbuf_read(uint8_t* buf, uint8_t* data, size_t numbytes, int pop) {
    the number of bytes read. */
 size_t cbuf_peek_segment(uint8_t* buf, uint8_t* data, size_t numbytes) {
     struct circbuf_header* chdr = (struct circbuf_header*) buf;
-    size_t used_space = _cbuf_used_space(chdr);
+    size_t used_space = cbuf_used_space(chdr);
     if (used_space < numbytes + sizeof(size_t)) {
         return 0;
     }
@@ -139,7 +140,7 @@ size_t cbuf_peek_segment(uint8_t* buf, uint8_t* data, size_t numbytes) {
 
 size_t cbuf_pop(uint8_t* buf, size_t numbytes) {
     struct circbuf_header* chdr = (struct circbuf_header*) buf;
-    size_t used_space = _cbuf_used_space(chdr);
+    size_t used_space = cbuf_used_space(chdr);
     if (used_space > numbytes) {
         numbytes = used_space;
     }

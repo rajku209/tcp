@@ -16,9 +16,10 @@ int cmp_timespec(const struct timespec* first, const struct timespec* second);
    you're doing! */
 int cbuf_init(uint8_t* buf, size_t len);
 
-int cbuf_write(uint8_t* buf, uint8_t* data, size_t data_len);
+size_t cbuf_write(uint8_t* buf, uint8_t* data, size_t data_len);
 size_t cbuf_read(uint8_t* buf, uint8_t* data, size_t numbytes, int pop);
 size_t cbuf_pop(uint8_t* data, size_t numbytes);
+size_t cbuf_used_space(uint8_t* buf);
 size_t cbuf_free_space(uint8_t* buf);
 
 int cbuf_write_segment(uint8_t* buf, uint8_t* segment, size_t seglen);

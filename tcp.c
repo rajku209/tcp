@@ -71,6 +71,23 @@ void _set_timer() {
     }
 }
 
+/* Should acquire send lock before invoking this! */
+void _process_sendbuf(struct tcp_socket* tcpsock) {
+    uint16_t cansend = tcpsock->SND.WND + tcpsock->SND.NXT - tcpsock->SND.UNA;
+    uint16_t tosend = (uint16_t) cbuf_used_space(tcpsock->sendbuf);
+    if (tosend > cansend) {
+        tosend = cansend;
+    }
+    if (!tosend) {
+        return;
+    }
+    uint8_t data[tosend];
+    cbuf_read(tcpsock->sendbuf, data, (size_t) tosend, 1);
+    send_tcp_msg(tcpsock, FLAG_ACK, tcpsock->SND.NXT, tcpsock->RCV.NXT,
+                 data, tosend, 1);
+    tcpsock->SND.NXT += tosend;
+}
+
 void _switch_state(struct tcp_socket* tcpsock, enum tcp_state newstate) {
     int retriesactive = tcpsock->retriesactive;
     tcpsock->state = newstate;
@@ -94,6 +111,9 @@ void _switch_state(struct tcp_socket* tcpsock, enum tcp_state newstate) {
             delay_to_abs(&tcpsock->nextretry, &WAIT_TIME);
         } else {
             delay_to_abs(&tcpsock->nextretry, &RETRY_TIME);
+            if (newstate == ESTABLISHED) {
+                _process_sendbuf(tcpsock);
+            }
         }
         tcpsock->numretries = 0;
         tcpsock->retriesactive = 1;
@@ -104,22 +124,23 @@ void _switch_state(struct tcp_socket* tcpsock, enum tcp_state newstate) {
     }
 }
 
+/* Should acquire send lock before calling this. */
 void _process_ack(struct tcp_socket* tcpsock, uint32_t ack) {
     struct tcp_header retrhdr; // the header of the segment on the queue
     size_t segsize; // the size of the segment on the queue
-
-    pthread_mutex_lock(&tcpsock->retrbuf_lock);
+    uint16_t data_len;
     // assignment is intended in the predicate of this while loop
     while ((segsize = cbuf_peek_segment_size(tcpsock->retrbuf))) {
         cbuf_peek_segment(tcpsock->retrbuf,
                           (uint8_t*) &retrhdr, sizeof(retrhdr));
-        if (ntohl(retrhdr.seqnum) < ack) {
+        data_len = (uint16_t) (segsize -
+                    ((retrhdr.offset_reserved_NS >> 2) & (uint8_t) 0xFC));
+        if (ntohl(retrhdr.seqnum) + data_len + (data_len == 0) <= ack) {
             cbuf_pop_segment(tcpsock->retrbuf, segsize);
         } else {
             break;
         }
     }
-    pthread_mutex_unlock(&tcpsock->retrbuf_lock);
 }
 
 void _socket_receive(struct tcp_socket* tcpsock, uint32_t srcaddr_nw,
@@ -132,6 +153,7 @@ void _socket_receive(struct tcp_socket* tcpsock, uint32_t srcaddr_nw,
     uint32_t seg_seq;
     uint32_t temp;
     int accept_seg;
+    pthread_mutex_lock(&tcpsock->send_lock);
     printf("Segment arrives for socket %d!\n", tcpsock->index);
     switch (tcpsock->state) {
     case CLOSED:
@@ -153,6 +175,9 @@ void _socket_receive(struct tcp_socket* tcpsock, uint32_t srcaddr_nw,
             // TODO check for security/compartment, and precedence
             tcpsock->IRS = ntohl(tcphdr->seqnum);
             tcpsock->RCV.NXT = tcpsock->IRS + 1;
+            tcpsock->SND.WND = ntohs(tcphdr->winsize);
+            tcpsock->SND.WL1 = tcpsock->IRS;
+            tcpsock->SND.WL2 = tcpsock->ISS - 1;
             tcpsock->remote_addr.sin_addr.s_addr = srcaddr_nw;
             tcpsock->remote_addr.sin_port = tcphdr->srcport;
             _switch_state(tcpsock, SYN_RECEIVED);
@@ -302,6 +327,8 @@ void _socket_receive(struct tcp_socket* tcpsock, uint32_t srcaddr_nw,
                         tcpsock->SND.WL1 = seg_seq;
                         tcpsock->SND.WL2 = ack;
                     }
+                    // Maybe we can send more data now
+                    _process_sendbuf(tcpsock);
                 } else if (ack > tcpsock->SND.NXT) {
                     send_tcp_ctl_msg(tcpsock, FLAG_ACK, tcpsock->SND.NXT,
                                      ntohl(tcphdr->seqnum), 0);
@@ -402,6 +429,7 @@ void _socket_receive(struct tcp_socket* tcpsock, uint32_t srcaddr_nw,
         break;
     }
     dropsegment:
+    pthread_mutex_unlock(&tcpsock->send_lock);
     _set_timer();
 }
 
@@ -439,7 +467,7 @@ void _tcp_perform_retries() {
                 _switch_state(tcpsock, CLOSED);
             } else {
                 // Check if there's a segment in the retransmission queue
-                pthread_mutex_lock(&tcpsock->retrbuf_lock);
+                pthread_mutex_lock(&tcpsock->send_lock);
                 retrans_segsize = cbuf_peek_segment_size(tcpsock->retrbuf);
                 if (retrans_segsize) {
                     printf("Retransmitting packet for socket %d\n",
@@ -454,7 +482,7 @@ void _tcp_perform_retries() {
                     free(segbuf);
                     tcpsock->numretries++;
                 }
-                pthread_mutex_unlock(&tcpsock->retrbuf_lock);
+                pthread_mutex_unlock(&tcpsock->send_lock);
 
                 if(tcpsock->numretries >= MAX_TRIES) {
                     // GIVE UP
@@ -582,12 +610,44 @@ struct tcp_socket* create_socket(struct sockaddr_in* bindto) {
     /* For safety. You can remove this memset. */
     memset(&tcpsock->remote_addr, 0, sizeof(struct sockaddr_in));
     memset(&tcpsock->nextretry, 0, sizeof(tcpsock->nextretry));
-    if (pthread_mutex_init(&tcpsock->retrbuf_lock, NULL)) {
-        printf("Could not initialize retransmission buffer lock\n");
+    if (pthread_mutex_init(&tcpsock->send_lock, NULL)) {
+        printf("Could not initialize the send lock\n");
     }
 
     sockets[next_index] = tcpsock;
     return tcpsock;
+}
+
+/* To account for a limited size buffer, this function returns the number of
+   bytes actually written to the buffer. */
+size_t send_data(struct tcp_socket* tcpsock, uint8_t* data, size_t len) {
+    size_t byteswritten;
+    switch(tcpsock->state) {
+    case CLOSED:
+        printf("Send fails on socket %d: connection does not exist\n",
+               tcpsock->index);
+        return 0;
+    case LISTEN:
+        /* This implementation requires you to have either accepted a connection
+           or initiated a connection before attempting to send. */
+        printf("Send fails on socket %d: connection not established\n",
+               tcpsock->index);
+        return 0;
+    case SYN_SENT:
+    case SYN_RECEIVED:
+    case ESTABLISHED:
+    case CLOSE_WAIT:
+        byteswritten = cbuf_write(tcpsock->sendbuf, data, len);
+        if (tcpsock->state == ESTABLISHED || tcpsock->state == CLOSE_WAIT) {
+            pthread_mutex_lock(&tcpsock->send_lock);
+            _process_sendbuf(tcpsock);
+            pthread_mutex_unlock(&tcpsock->send_lock);
+        }
+        return byteswritten;
+    default:
+        printf("Send fails on socket %d: connection closing\n", tcpsock->index);
+        return 0;
+    }
 }
 
 void close_connection(struct tcp_socket* tcpsock) {
@@ -628,7 +688,7 @@ void close_connection(struct tcp_socket* tcpsock) {
 
 void destroy_socket(struct tcp_socket* tcpsock) {
     sockets[tcpsock->index] = NULL;
-    pthread_mutex_destroy(&tcpsock->retrbuf_lock);
+    pthread_mutex_destroy(&tcpsock->send_lock);
     free(tcpsock);
 }
 

@@ -46,9 +46,12 @@ int main(int argc __attribute__((__unused__)),
     int buf_size = 1024 * sizeof(char);
     char* buf = malloc(buf_size);
     char* result;
+    size_t sent;
     // assignment in predicate is intentional
     while ((result = fgets(buf, buf_size, stdin))) {
         printf("Input: %s\n", buf);
+        sent = send_data(sock, (uint8_t*) buf, strlen(buf));
+        printf("Send %lu bytes\n", sent);
     }
     free(buf);
 
